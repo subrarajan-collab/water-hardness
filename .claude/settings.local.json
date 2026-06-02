@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(dir /s /b \"C:\\\\Users\\\\dell_\\\\OneDrive\\\\Desktop\\\\Water quality\\\\water hardness\\\\src\")",
+      "Bash(npx expo *)",
+      "Bash(node -e ' *)",
+      "Bash(npm remove *)",
+      "Bash(node -e \"const p = require\\('C:/Users/dell_/OneDrive/Desktop/Water quality/water hardness/node_modules/react-native-screens/package.json'\\); console.log\\(p.main, p.module, p.source\\)\")"
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Water Hardness Tester",
+    "slug": "water-hardness-tester",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1565C0"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO"
+      ],
+      "package": "com.waterquality.hardnesstester"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Water Hardness Tester to access your camera to capture water samples."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow access to save sample photos."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "ec2624a0-6e43-41c0-b276-5bee573d3e32"
+      }
+    },
+    "owner": "inphoton"
+  }
+}
