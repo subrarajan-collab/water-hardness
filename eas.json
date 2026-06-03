@@ -6,6 +6,9 @@
     "preview": {
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "NPM_CONFIG_FETCH_TIMEOUT": "600000"
       }
     },
     "production": {
