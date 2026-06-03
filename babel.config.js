@@ -2,18 +2,25 @@ module.exports = function (api) {
   api.cache(true);
   return {
     plugins: [
-      // 1. Strip TypeScript FIRST — runs only on .ts/.tsx files (default, no allExtensions).
-      //    expo-file-system ships "main": "src/index.ts" so this is required before
-      //    class-properties plugins run, otherwise 'declare' fields cause a crash.
-      ['@babel/plugin-transform-typescript', { allowDeclareFields: true }],
+      // 1. TypeScript stripping FIRST — must run before class-properties.
+      //    allExtensions: true  → applies to ALL files (.js, .ts, .tsx, .jsx)
+      //    isTSX: true          → allows JSX syntax inside the TypeScript parser
+      //                           so .js/.jsx files with JSX are parsed correctly.
+      //    allowDeclareFields   → handles expo-file-system's `declare class` syntax.
+      //    NOTE: this plugin only STRIPS TypeScript syntax; JSX is left intact
+      //    for babel-preset-expo to convert to React.createElement() later.
+      ['@babel/plugin-transform-typescript', {
+        allowDeclareFields: true,
+        allExtensions: true,
+        isTSX: true,
+      }],
 
-      // 2. Transform private class fields (#field) for .js files so hermesc can compile.
-      //    React Native 0.81 core (EventEmitter, geometry) uses #field syntax.
+      // 2. Transform private class fields (#field) so hermesc can compile them.
       ['@babel/plugin-transform-class-properties', { loose: true }],
       ['@babel/plugin-transform-private-methods', { loose: true }],
     ],
-    // babel-preset-expo runs AFTER all plugins (presets always run last).
-    // Its own TypeScript / class-property transforms become no-ops on already-transformed code.
+
+    // Runs AFTER all plugins. JSX → React.createElement, flow, etc.
     presets: ['babel-preset-expo'],
   };
 };
