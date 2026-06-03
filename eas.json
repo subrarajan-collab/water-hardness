@@ -5,15 +5,18 @@
   "build": {
     "preview": {
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "image": "ubuntu-22.04-jdk-17-ndk-r25b"
       },
       "env": {
-        "NPM_CONFIG_FETCH_TIMEOUT": "600000"
+        "NPM_CONFIG_FETCH_TIMEOUT": "600000",
+        "GRADLE_OPTS": "-Xmx4g -XX:MaxMetaspaceSize=512m"
       }
     },
     "production": {
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "app-bundle",
+        "image": "ubuntu-22.04-jdk-17-ndk-r25b"
       }
     }
   }

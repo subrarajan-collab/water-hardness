@@ -11,10 +11,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1565C0"
       },
-      "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES"
-      ],
+      "permissions": ["android.permission.CAMERA"],
       "package": "com.waterquality.hardnesstester"
     },
     "plugins": [
@@ -22,12 +19,6 @@
         "expo-camera",
         {
           "cameraPermission": "Allow Water Hardness Tester to access your camera to capture water samples."
-        }
-      ],
-      [
-        "expo-media-library",
-        {
-          "photosPermission": "Allow access to save sample photos."
         }
       ]
     ],
