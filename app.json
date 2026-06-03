@@ -5,6 +5,11 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1565C0"
+    },
     "userInterfaceStyle": "light",
     "android": {
       "adaptiveIcon": {
@@ -12,8 +17,7 @@
         "backgroundColor": "#1565C0"
       },
       "permissions": ["android.permission.CAMERA"],
-      "package": "com.waterquality.hardnesstester",
-      "jsEngine": "jsc"
+      "package": "com.waterquality.hardnesstester"
     },
     "plugins": [
       [
