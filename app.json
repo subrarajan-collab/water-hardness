@@ -12,7 +12,8 @@
         "backgroundColor": "#1565C0"
       },
       "permissions": ["android.permission.CAMERA"],
-      "package": "com.waterquality.hardnesstester"
+      "package": "com.waterquality.hardnesstester",
+      "jsEngine": "jsc"
     },
     "plugins": [
       [
