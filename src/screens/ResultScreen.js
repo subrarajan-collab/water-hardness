@@ -7,22 +7,38 @@ import { analyzeImageColors, computeHardness, getHardnessLabel } from '../utils/
 import { loadCalibrationPoints, saveTestResult } from '../utils/calibration';
 
 export default function ResultScreen({ route, navigation }) {
-  const { croppedUri, originalUri } = route.params;
+  // New averaged-video path: { analysisData, sampleUri, frameCount }
+  // Old single-frame path:    { croppedUri, originalUri }
+  const { analysisData, sampleUri, frameCount, croppedUri, originalUri } = route.params;
 
-  const [result, setResult] = useState(null);
+  const [result, setResult]           = useState(null);
   const [hardnessPPM, setHardnessPPM] = useState(null);
-  const [label, setLabel] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [saved, setSaved] = useState(false);
+  const [label, setLabel]             = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState(null);
+  const [saved, setSaved]             = useState(false);
+
+  // Determine which image to display as the analysed-region preview
+  const previewUri = sampleUri ?? croppedUri ?? null;
 
   useEffect(() => {
     runAnalysis();
   }, []);
 
   const runAnalysis = async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const data = await analyzeImageColors(croppedUri);
+      let data;
+
+      if (analysisData) {
+        // ── New path: averaged data already computed in CameraScreen ──
+        data = analysisData;
+      } else {
+        // ── Legacy path: single cropped image ──
+        data = await analyzeImageColors(croppedUri);
+      }
+
       const calPoints = await loadCalibrationPoints();
       const ppm = computeHardness(data, calPoints);
       const lbl = getHardnessLabel(data.blueDominance);
@@ -44,7 +60,8 @@ export default function ResultScreen({ route, navigation }) {
       r: result.r, g: result.g, b: result.b,
       hardnessPPM,
       label: label?.label,
-      imageUri: croppedUri,
+      imageUri: previewUri,
+      frameCount: result.frameCount ?? 1,
     });
     setSaved(true);
     Alert.alert('Saved', 'Result added to history.');
@@ -53,11 +70,13 @@ export default function ResultScreen({ route, navigation }) {
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
+
         {loading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="large" color="#1565C0" />
             <Text style={styles.loadingText}>Analysing colour intensity…</Text>
           </View>
+
         ) : error ? (
           <View style={styles.loadingBox}>
             <Text style={styles.errorText}>⚠️ {error}</Text>
@@ -65,9 +84,22 @@ export default function ResultScreen({ route, navigation }) {
               <Text style={styles.retryBtnText}>Retry</Text>
             </TouchableOpacity>
           </View>
+
         ) : result ? (
           <>
-            {/* Colour swatch + label */}
+            {/* ── Averaged badge (only for multi-frame results) ── */}
+            {result.frameCount > 1 && (
+              <View style={styles.avgBadge}>
+                <Text style={styles.avgBadgeText}>
+                  📊 Averaged over {result.frameCount} frames
+                  {result.blueScoreStdDev !== undefined
+                    ? `  ·  σ = ${result.blueScoreStdDev}`
+                    : ''}
+                </Text>
+              </View>
+            )}
+
+            {/* ── Colour swatch + label ── */}
             <View style={[styles.resultCard, { borderTopColor: label?.color }]}>
               <View style={styles.swatchRow}>
                 <View style={[styles.swatch, { backgroundColor: `rgb(${result.r},${result.g},${result.b})` }]} />
@@ -82,7 +114,7 @@ export default function ResultScreen({ route, navigation }) {
               </View>
             </View>
 
-            {/* Metrics */}
+            {/* ── Metrics ── */}
             <View style={styles.metricsCard}>
               <Text style={styles.metricsTitle}>Colour Analysis</Text>
 
@@ -102,6 +134,29 @@ export default function ResultScreen({ route, navigation }) {
                 <View style={[styles.barFill, { width: `${result.blueDominance}%`, backgroundColor: '#29B6F6' }]} />
               </View>
 
+              {/* Stability indicator (std dev) */}
+              {result.blueScoreStdDev !== undefined && (
+                <>
+                  <View style={styles.metricRow}>
+                    <Text style={styles.metricName}>Reading Stability (σ)</Text>
+                    <Text style={[
+                      styles.metricValue,
+                      { color: result.blueScoreStdDev < 5 ? '#2E7D32' : result.blueScoreStdDev < 12 ? '#FF8F00' : '#C62828' },
+                    ]}>
+                      {result.blueScoreStdDev}
+                      {'  '}
+                      {result.blueScoreStdDev < 5 ? '✓ Stable' : result.blueScoreStdDev < 12 ? '~ Fair' : '⚠ Unstable'}
+                    </Text>
+                  </View>
+                  <View style={styles.barBg}>
+                    <View style={[styles.barFill, {
+                      width: `${Math.min(100, (result.blueScoreStdDev / 30) * 100)}%`,
+                      backgroundColor: result.blueScoreStdDev < 5 ? '#2E7D32' : result.blueScoreStdDev < 12 ? '#FF8F00' : '#C62828',
+                    }]} />
+                  </View>
+                </>
+              )}
+
               <View style={styles.rgbRow}>
                 {[['R', result.r, '#EF5350'], ['G', result.g, '#66BB6A'], ['B', result.b, '#42A5F5']].map(([ch, val, col]) => (
                   <View key={ch} style={styles.rgbItem}>
@@ -113,14 +168,21 @@ export default function ResultScreen({ route, navigation }) {
               </View>
             </View>
 
-            {/* Cropped preview */}
-            <View style={styles.previewCard}>
-              <Text style={styles.metricsTitle}>Analysed Region</Text>
-              <Image source={{ uri: croppedUri }} style={styles.preview} resizeMode="contain" />
-              <Text style={styles.pixelCount}>{result.pixelCount.toLocaleString()} pixels analysed</Text>
-            </View>
+            {/* ── Preview frame ── */}
+            {previewUri && (
+              <View style={styles.previewCard}>
+                <Text style={styles.metricsTitle}>
+                  {result.frameCount > 1 ? 'Sample Frame (mid-recording)' : 'Analysed Region'}
+                </Text>
+                <Image source={{ uri: previewUri }} style={styles.preview} resizeMode="contain" />
+                <Text style={styles.pixelCount}>
+                  {result.pixelCount.toLocaleString()} pixels analysed per frame
+                  {result.frameCount > 1 ? ` · ${result.frameCount} frames` : ''}
+                </Text>
+              </View>
+            )}
 
-            {/* Actions */}
+            {/* ── Actions ── */}
             <View style={styles.actionsRow}>
               <TouchableOpacity
                 style={[styles.actionBtn, styles.saveBtn, saved && styles.savedBtn]}
@@ -142,6 +204,7 @@ export default function ResultScreen({ route, navigation }) {
             </TouchableOpacity>
           </>
         ) : null}
+
       </ScrollView>
     </View>
   );
@@ -156,6 +219,12 @@ const styles = StyleSheet.create({
   errorText: { color: '#C62828', fontSize: 15, textAlign: 'center', marginBottom: 20 },
   retryBtn: { backgroundColor: '#1565C0', borderRadius: 12, paddingHorizontal: 28, paddingVertical: 12 },
   retryBtnText: { color: '#FFF', fontWeight: 'bold' },
+
+  avgBadge: {
+    backgroundColor: '#E8F5E9', borderRadius: 10, padding: 10,
+    marginBottom: 14, borderLeftWidth: 4, borderLeftColor: '#2E7D32',
+  },
+  avgBadgeText: { color: '#2E7D32', fontSize: 13, fontWeight: '600' },
 
   resultCard: {
     backgroundColor: '#FFF', borderRadius: 16, padding: 20,

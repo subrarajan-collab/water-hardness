@@ -41,6 +41,29 @@ export async function analyzeImageColors(uri) {
   };
 }
 
+// Averages multiple frame analysis results into a single result
+export function averageAnalysisResults(results) {
+  if (!results || results.length === 0) return null;
+  const n = results.length;
+  const avgR = Math.round(results.reduce((s, r) => s + r.r, 0) / n);
+  const avgG = Math.round(results.reduce((s, r) => s + r.g, 0) / n);
+  const avgB = Math.round(results.reduce((s, r) => s + r.b, 0) / n);
+  const total = avgR + avgG + avgB;
+  return {
+    r: avgR,
+    g: avgG,
+    b: avgB,
+    blueScore: avgB,
+    blueDominance: total > 0 ? parseFloat(((avgB / total) * 100).toFixed(1)) : 0,
+    pixelCount: Math.round(results.reduce((s, r) => s + r.pixelCount, 0) / n),
+    frameCount: n,
+    // Standard deviation of blueScore across frames — useful for quality indicator
+    blueScoreStdDev: parseFloat(
+      Math.sqrt(results.reduce((s, r) => s + Math.pow(r.blueScore - avgB, 2), 0) / n).toFixed(1)
+    ),
+  };
+}
+
 // Maps blue analysis to a ppm value using calibration points (linear interpolation)
 export function computeHardness(analysisResult, calibrationPoints = []) {
   const { blueScore } = analysisResult;
