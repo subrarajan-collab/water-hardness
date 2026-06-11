@@ -7,7 +7,10 @@
       "Bash(node -e ' *)",
       "Bash(npm remove *)",
       "Bash(node -e \"const p = require\\('C:/Users/dell_/OneDrive/Desktop/Water quality/water hardness/node_modules/react-native-screens/package.json'\\); console.log\\(p.main, p.module, p.source\\)\")",
-      "Bash(Remove-Item package-lock.json -ErrorAction SilentlyContinue)"
+      "Bash(Remove-Item package-lock.json -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-PSDrive C | Select-Object Used, Free, @{N='UsedGB';E={[math]::Round\\($_.Used/1GB,1\\)}}, @{N='FreeGB';E={[math]::Round\\($_.Free/1GB,1\\)}})",
+      "Bash(wmic logicaldisk *)",
+      "PowerShell(npm cache clean --force 2>&1)"
     ]
   }
 }
