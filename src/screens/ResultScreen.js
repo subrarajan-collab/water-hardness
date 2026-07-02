@@ -3,8 +3,24 @@ import {
   View, Text, StyleSheet, ScrollView,
   TouchableOpacity, Image, ActivityIndicator, Alert,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import { analyzeImageColors, computeHardness, getHardnessLabel } from '../utils/colorAnalysis';
 import { loadCalibrationPoints, saveTestResult } from '../utils/calibration';
+
+// Camera output lives in the app cache, which Android may clear at any time.
+// Copy the preview into the persistent document directory before saving history.
+async function persistImage(uri) {
+  if (!uri) return null;
+  try {
+    const dir = FileSystem.documentDirectory + 'results/';
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+    const dest = dir + Date.now() + '.jpg';
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch {
+    return uri; // fall back to the volatile uri rather than losing the entry
+  }
+}
 
 export default function ResultScreen({ route, navigation }) {
   // New averaged-video path: { analysisData, sampleUri, frameCount }
@@ -54,14 +70,17 @@ export default function ResultScreen({ route, navigation }) {
 
   const saveResult = async () => {
     if (!result || saved) return;
+    const persistedUri = await persistImage(previewUri);
     await saveTestResult({
       blueScore: result.blueScore,
       blueDominance: result.blueDominance,
       r: result.r, g: result.g, b: result.b,
       hardnessPPM,
       label: label?.label,
-      imageUri: previewUri,
+      imageUri: persistedUri,
       frameCount: result.frameCount ?? 1,
+      rejectedFrames: result.rejectedFrames ?? 0,
+      blueScoreStdDev: result.blueScoreStdDev,
     });
     setSaved(true);
     Alert.alert('Saved', 'Result added to history.');
@@ -92,6 +111,7 @@ export default function ResultScreen({ route, navigation }) {
               <View style={styles.avgBadge}>
                 <Text style={styles.avgBadgeText}>
                   📊 Averaged over {result.frameCount} frames
+                  {result.rejectedFrames > 0 ? ` (${result.rejectedFrames} outlier${result.rejectedFrames > 1 ? 's' : ''} rejected)` : ''}
                   {result.blueScoreStdDev !== undefined
                     ? `  ·  σ = ${result.blueScoreStdDev}`
                     : ''}

@@ -41,9 +41,31 @@ export async function analyzeImageColors(uri) {
   };
 }
 
-// Averages multiple frame analysis results into a single result
-export function averageAnalysisResults(results) {
-  if (!results || results.length === 0) return null;
+// Averages multiple frame analysis results into a single result.
+// Uses a median-anchored outlier rejection: frames whose blueScore deviates
+// from the median by more than max(8, 3×MAD) are dropped before averaging,
+// so a single bad frame (exposure hunt, bump, shadow) cannot skew the result.
+export function averageAnalysisResults(allResults) {
+  if (!allResults || allResults.length === 0) return null;
+
+  let results = allResults;
+  let rejectedCount = 0;
+
+  if (allResults.length >= 5) {
+    const scores = allResults.map((r) => r.blueScore).sort((a, b) => a - b);
+    const median = scores[Math.floor(scores.length / 2)];
+    const absDev = scores.map((s) => Math.abs(s - median)).sort((a, b) => a - b);
+    const mad = absDev[Math.floor(absDev.length / 2)];
+    const tolerance = Math.max(8, 3 * mad);
+    results = allResults.filter((r) => Math.abs(r.blueScore - median) <= tolerance);
+    rejectedCount = allResults.length - results.length;
+    if (results.length < 3) {
+      // rejection too aggressive (highly unstable capture) — keep everything
+      results = allResults;
+      rejectedCount = 0;
+    }
+  }
+
   const n = results.length;
   const avgR = Math.round(results.reduce((s, r) => s + r.r, 0) / n);
   const avgG = Math.round(results.reduce((s, r) => s + r.g, 0) / n);
@@ -57,6 +79,7 @@ export function averageAnalysisResults(results) {
     blueDominance: total > 0 ? parseFloat(((avgB / total) * 100).toFixed(1)) : 0,
     pixelCount: Math.round(results.reduce((s, r) => s + r.pixelCount, 0) / n),
     frameCount: n,
+    rejectedFrames: rejectedCount,
     // Standard deviation of blueScore across frames — useful for quality indicator
     blueScoreStdDev: parseFloat(
       Math.sqrt(results.reduce((s, r) => s + Math.pow(r.blueScore - avgB, 2), 0) / n).toFixed(1)

@@ -20,13 +20,15 @@ const GUIDE_W = 200;
 const GUIDE_H = 300;
 
 const TOTAL_SECONDS = 30;
-const CAPTURE_EVERY_N_SECONDS = 2; // 1 frame every 2 s → 15 frames total
+const CAPTURE_EVERY_N_SECONDS = 2; // 1 frame every 2 s
+const WARMUP_SECONDS = 5; // discard period: auto-exposure/AWB settling + LED warm-up
 
 export default function CameraScreen({ navigation }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [phase, setPhase] = useState('idle'); // idle | recording | processing
   const [countdown, setCountdown] = useState(TOTAL_SECONDS);
   const [framesCaptured, setFramesCaptured] = useState(0);
+  const [pictureSize, setPictureSize] = useState(undefined);
 
   const cameraRef = useRef(null);
   const framesRef = useRef([]);          // collected raw frame URIs
@@ -37,6 +39,26 @@ export default function CameraScreen({ navigation }) {
   useEffect(() => {
     if (permission && !permission.granted) requestPermission();
   }, [permission]);
+
+  // Pick an explicit, consistent picture size (~1600 px wide) so pixel
+  // geometry is identical across runs and devices.
+  const onCameraReady = async () => {
+    try {
+      const sizes = await cameraRef.current?.getAvailablePictureSizesAsync();
+      if (!sizes || sizes.length === 0) return;
+      const parsed = sizes
+        .map((s) => {
+          const [w, h] = s.split('x').map(Number);
+          return { s, w, h };
+        })
+        .filter((p) => Number.isFinite(p.w) && Number.isFinite(p.h));
+      if (parsed.length === 0) return;
+      parsed.sort((a, b) => Math.abs(a.w - 1600) - Math.abs(b.w - 1600));
+      setPictureSize(parsed[0].s);
+    } catch (_) {
+      // fall back to device default
+    }
+  };
 
   // ─── Start 30-second recording ───────────────────────────────────────────
   const startRecording = () => {
@@ -51,9 +73,10 @@ export default function CameraScreen({ navigation }) {
       secondsRef.current -= 1;
       setCountdown(secondsRef.current);
 
-      // Capture a frame every CAPTURE_EVERY_N_SECONDS
+      // Capture a frame every CAPTURE_EVERY_N_SECONDS, but discard the
+      // warm-up window while auto-exposure/AWB settle and the LED warms up.
       const elapsed = TOTAL_SECONDS - secondsRef.current;
-      if (elapsed % CAPTURE_EVERY_N_SECONDS === 0 && !isTakingRef.current) {
+      if (elapsed > WARMUP_SECONDS && elapsed % CAPTURE_EVERY_N_SECONDS === 0 && !isTakingRef.current) {
         isTakingRef.current = true;
         try {
           const photo = await cameraRef.current.takePictureAsync({
@@ -107,17 +130,22 @@ export default function CameraScreen({ navigation }) {
       const imgH = probe.height;
 
       // Map guide frame (centred on screen) to image pixel coordinates.
-      // The camera preview fills the whole screen (SCREEN_W × SCREEN_H).
-      const scaleX = imgW / SCREEN_W;
-      const scaleY = imgH / SCREEN_H;
+      // The preview fills the screen in "cover" mode: the photo is scaled
+      // uniformly until it covers SCREEN_W × SCREEN_H, and the overflow is
+      // cropped equally on both sides. Photo aspect (4:3) ≠ screen aspect,
+      // so a plain imgW/SCREEN_W scale would land the ROI off-target.
+      const scale = Math.max(SCREEN_W / imgW, SCREEN_H / imgH);
+      const dx = (imgW * scale - SCREEN_W) / 2; // hidden preview margin (px, screen units)
+      const dy = (imgH * scale - SCREEN_H) / 2;
 
       const guideLeft = (SCREEN_W - GUIDE_W) / 2;
       const guideTop  = (SCREEN_H - GUIDE_H) / 2;
 
-      const cropX = Math.max(0, Math.round(guideLeft * scaleX));
-      const cropY = Math.max(0, Math.round(guideTop  * scaleY));
-      const cropW = Math.min(Math.round(GUIDE_W * scaleX), imgW - cropX);
-      const cropH = Math.min(Math.round(GUIDE_H * scaleY), imgH - cropY);
+      // screen point → photo point: (screen + hiddenMargin) / scale
+      const cropX = Math.max(0, Math.round((guideLeft + dx) / scale));
+      const cropY = Math.max(0, Math.round((guideTop  + dy) / scale));
+      const cropW = Math.min(Math.round(GUIDE_W / scale), imgW - cropX);
+      const cropH = Math.min(Math.round(GUIDE_H / scale), imgH - cropY);
 
       // Analyse each frame
       const analysisResults = [];
@@ -193,7 +221,16 @@ export default function CameraScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      <CameraView style={styles.camera} ref={cameraRef} facing="back">
+      <CameraView
+        style={styles.camera}
+        ref={cameraRef}
+        facing="back"
+        flash="off"
+        enableTorch={false}
+        autofocus="on"
+        pictureSize={pictureSize}
+        onCameraReady={onCameraReady}
+      >
         <SafeAreaView style={styles.overlay}>
 
           {/* Top bar */}
@@ -255,7 +292,7 @@ export default function CameraScreen({ navigation }) {
                   <Text style={styles.startButtonText}>Start 30s Analysis</Text>
                 </TouchableOpacity>
                 <Text style={styles.subHint}>
-                  Captures 15 frames · averages blue intensity
+                  5s warm-up · 13 frames · averaged blue intensity
                 </Text>
               </>
             ) : (
