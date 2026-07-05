@@ -1,8 +1,10 @@
 import * as FileSystem from 'expo-file-system';
 import jpeg from 'jpeg-js';
 
-// Decodes a JPEG from a file URI and returns average RGB + derived metrics
-export async function analyzeImageColors(uri) {
+// Decodes a JPEG from a file URI and returns average RGB + derived metrics.
+// opts.circular: analyse only the inscribed ellipse (for the vertical device,
+// where the sample is a glowing disc — excludes the dark square corners).
+export async function analyzeImageColors(uri, opts = {}) {
   const base64 = await FileSystem.readAsStringAsync(uri, {
     encoding: FileSystem.EncodingType.Base64,
   });
@@ -17,14 +19,35 @@ export async function analyzeImageColors(uri) {
   const { data, width, height } = jpeg.decode(bytes, { useTArray: true });
 
   let r = 0, g = 0, b = 0;
-  const count = width * height;
+  let count = 0;
 
-  for (let i = 0; i < data.length; i += 4) {
-    r += data[i];
-    g += data[i + 1];
-    b += data[i + 2];
-    // data[i+3] is alpha — always 255 for JPEG, skip
+  if (opts.circular) {
+    const cx = (width - 1) / 2;
+    const cy = (height - 1) / 2;
+    const rx = width / 2;
+    const ry = height / 2;
+    for (let y = 0; y < height; y++) {
+      const dy = (y - cy) / ry;
+      for (let x = 0; x < width; x++) {
+        const dx = (x - cx) / rx;
+        if (dx * dx + dy * dy > 1) continue;
+        const i = (y * width + x) * 4;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        count++;
+      }
+    }
+  } else {
+    count = width * height;
+    for (let i = 0; i < data.length; i += 4) {
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+      // data[i+3] is alpha — always 255 for JPEG, skip
+    }
   }
+  if (count === 0) count = 1;
 
   const avgR = Math.round(r / count);
   const avgG = Math.round(g / count);

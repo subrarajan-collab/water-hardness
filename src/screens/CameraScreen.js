@@ -15,9 +15,11 @@ import { analyzeImageColors, averageAnalysisResults } from '../utils/colorAnalys
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
-// Guide frame dimensions (must match the guideFrame style below)
-const GUIDE_W = 200;
-const GUIDE_H = 300;
+// Circular guide ring for the vertical (look-down-the-tube) device.
+// The glowing disc of the tube must be centred inside this ring.
+const GUIDE_D = 220; // on-screen diameter, px
+const GUIDE_W = GUIDE_D;
+const GUIDE_H = GUIDE_D;
 
 const TOTAL_SECONDS = 30;
 const CAPTURE_EVERY_N_SECONDS = 2; // 1 frame every 2 s
@@ -161,7 +163,19 @@ export default function CameraScreen({ navigation }) {
           { format: ImageManipulator.SaveFormat.JPEG, base64: false }
         );
         if (i === Math.floor(uris.length / 2)) sampleUri = cropped.uri; // middle frame as preview
-        const data = await analyzeImageColors(cropped.uri);
+        const data = await analyzeImageColors(cropped.uri, { circular: true });
+
+        // Glow gate on the first frame: if the ROI is essentially dark, the
+        // LED is off or the phone is not centred over the aperture — abort
+        // early instead of averaging 25 s of darkness.
+        if (i === 0 && data.r + data.g + data.b < 30) {
+          Alert.alert(
+            'No glow detected',
+            'The measurement circle is dark. Check that the LED is on and slide the phone until the bright disc is centred in the ring.'
+          );
+          setPhase('idle');
+          return;
+        }
         analysisResults.push(data);
       }
 
@@ -271,7 +285,8 @@ export default function CameraScreen({ navigation }) {
               </View>
             ) : (
               <Text style={styles.guideText}>
-                Centre the test tube inside the frame
+                Lay the phone on the device, camera over the hole.{'\n'}
+                Slide it until the glowing disc is centred in the ring.
               </Text>
             )}
           </View>
@@ -281,7 +296,7 @@ export default function CameraScreen({ navigation }) {
             {phase === 'idle' ? (
               <>
                 <Text style={styles.hint}>
-                  Hold steady · Good lighting · Plain background
+                  LED on · Tube filled to 10 mL mark · Disc centred
                 </Text>
                 <TouchableOpacity
                   style={styles.startButton}
@@ -298,7 +313,7 @@ export default function CameraScreen({ navigation }) {
             ) : (
               <>
                 <Text style={styles.hint}>
-                  Keep the test tube steady in the frame
+                  Measuring — don't touch the phone or the device
                 </Text>
                 <TouchableOpacity
                   style={styles.stopButton}
@@ -354,9 +369,9 @@ const styles = StyleSheet.create({
   guideFrame: {
     width: GUIDE_W,
     height: GUIDE_H,
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: '#29B6F6',
-    borderRadius: 16,
+    borderRadius: GUIDE_D / 2,
     backgroundColor: 'transparent',
     justifyContent: 'center',
     alignItems: 'center',

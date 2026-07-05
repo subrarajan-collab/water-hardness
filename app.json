@@ -16,7 +16,10 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1565C0"
       },
-      "permissions": ["android.permission.CAMERA"],
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
       "package": "com.waterquality.hardnesstester"
     },
     "plugins": [
@@ -28,11 +31,11 @@
       ],
       "./plugins/withAgpVersion"
     ],
+    "owner": "nagapavi",
     "extra": {
       "eas": {
-        "projectId": "ec2624a0-6e43-41c0-b276-5bee573d3e32"
+        "projectId": "c9d624d8-233f-4729-ad32-d1d111741810"
       }
-    },
-    "owner": "inphoton"
+    }
   }
 }
