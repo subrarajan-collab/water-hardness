@@ -18,6 +18,7 @@ import {
 
 export default function CalibrationScreen({ route, navigation }) {
   const prefillBlueScore = route.params?.blueScore;
+  const prefillAbsorbance = route.params?.absorbance ?? null;
 
   const [points, setPoints] = useState([]);
   const [blueScore, setBlueScore] = useState(
@@ -48,7 +49,12 @@ export default function CalibrationScreen({ route, navigation }) {
       return;
     }
 
-    const updated = await saveCalibrationPoint(bs, ppm, label.trim());
+    // Attach the exposure-immune absorbance only if the blue-score field still
+    // matches the measurement it came from (i.e. the user didn't hand-edit it).
+    const absorbance =
+      prefillAbsorbance !== null && bs === prefillBlueScore ? prefillAbsorbance : null;
+
+    const updated = await saveCalibrationPoint(bs, ppm, label.trim(), absorbance);
     setPoints(updated);
     setBlueScore('');
     setHardnessPPM('');
@@ -89,7 +95,7 @@ export default function CalibrationScreen({ route, navigation }) {
       <View style={styles.infoCard}>
         <Text style={styles.infoTitle}>How Calibration Works</Text>
         <Text style={styles.infoText}>
-          Measure water samples with a known hardness (e.g. from a lab reference), run them through the app, and record the blue score alongside the known ppm value. With 2+ points the app builds a linear curve to convert future blue scores into ppm.
+          Measure known-hardness samples through the app and tap “Calibrate” on the result to pre-fill a point. When every point was captured with the diffuser reference, the app calibrates on absorbance (log₁₀ I_bg / I_water), which is immune to auto-exposure drift. Points typed in by hand use raw blue score instead. Add 2+ points to enable ppm.
         </Text>
       </View>
 
@@ -152,7 +158,9 @@ export default function CalibrationScreen({ route, navigation }) {
               <View style={styles.pointDot} />
               <View style={styles.pointInfo}>
                 <Text style={styles.pointMain}>
-                  Blue {pt.blueScore} → {pt.hardness} ppm
+                  {typeof pt.absorbance === 'number'
+                    ? `A ${pt.absorbance.toFixed(3)} → ${pt.hardness} ppm`
+                    : `Blue ${pt.blueScore} → ${pt.hardness} ppm`}
                 </Text>
                 {pt.label ? (
                   <Text style={styles.pointLabel}>{pt.label}</Text>
@@ -176,7 +184,11 @@ export default function CalibrationScreen({ route, navigation }) {
 
         {points.length >= 2 && (
           <View style={styles.successBox}>
-            <Text style={styles.successText}>✓ Calibration active — ppm readings enabled.</Text>
+            <Text style={styles.successText}>
+              {points.every((p) => typeof p.absorbance === 'number')
+                ? '✓ Calibration active (absorbance mode — exposure-immune).'
+                : '✓ Calibration active (blue-score mode). Re-capture points with the diffuser reference for exposure-immune readings.'}
+            </Text>
           </View>
         )}
       </View>

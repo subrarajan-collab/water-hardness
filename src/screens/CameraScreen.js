@@ -11,7 +11,7 @@ import {
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { analyzeImageColors, averageAnalysisResults } from '../utils/colorAnalysis';
+import { analyzeImageColors, averageAnalysisResults, computeFrameMetrics } from '../utils/colorAnalysis';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -20,6 +20,14 @@ const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const GUIDE_D = 220; // on-screen diameter, px
 const GUIDE_W = GUIDE_D;
 const GUIDE_H = GUIDE_D;
+
+// Background reference patch: a small square the user positions over BARE lit
+// diffuser (no bottle). Its blue level is the incident light I_background.
+// Scoring on log10(I_background / I_water) makes the reading immune to phone
+// auto-exposure drift — a raw blue of 141 today would not mean 141 tomorrow.
+const BG_SIZE = 80; // on-screen square side, px
+const BG_CENTER_X = SCREEN_W / 2;
+const BG_CENTER_Y = Math.max(115, (SCREEN_H - GUIDE_H) / 2 - 62); // above the ring
 
 const TOTAL_SECONDS = 30;
 const CAPTURE_EVERY_N_SECONDS = 2; // 1 frame every 2 s
@@ -140,43 +148,74 @@ export default function CameraScreen({ navigation }) {
       const dx = (imgW * scale - SCREEN_W) / 2; // hidden preview margin (px, screen units)
       const dy = (imgH * scale - SCREEN_H) / 2;
 
+      // screen point → photo point: (screen + hiddenMargin) / scale
+      const toPhoto = (leftS, topS, sizeW, sizeH) => ({
+        originX: Math.max(0, Math.round((leftS + dx) / scale)),
+        originY: Math.max(0, Math.round((topS + dy) / scale)),
+        width: Math.round(sizeW / scale),
+        height: Math.round(sizeH / scale),
+      });
+
+      // Water disc ROI (centred guide ring)
       const guideLeft = (SCREEN_W - GUIDE_W) / 2;
       const guideTop  = (SCREEN_H - GUIDE_H) / 2;
+      const wc = toPhoto(guideLeft, guideTop, GUIDE_W, GUIDE_H);
+      wc.width = Math.min(wc.width, imgW - wc.originX);
+      wc.height = Math.min(wc.height, imgH - wc.originY);
 
-      // screen point → photo point: (screen + hiddenMargin) / scale
-      const cropX = Math.max(0, Math.round((guideLeft + dx) / scale));
-      const cropY = Math.max(0, Math.round((guideTop  + dy) / scale));
-      const cropW = Math.min(Math.round(GUIDE_W / scale), imgW - cropX);
-      const cropH = Math.min(Math.round(GUIDE_H / scale), imgH - cropY);
+      // Background reference ROI (bare diffuser patch above the ring)
+      const bc = toPhoto(BG_CENTER_X - BG_SIZE / 2, BG_CENTER_Y - BG_SIZE / 2, BG_SIZE, BG_SIZE);
+      bc.width = Math.min(bc.width, imgW - bc.originX);
+      bc.height = Math.min(bc.height, imgH - bc.originY);
 
-      // Analyse each frame
+      // Analyse each frame: water disc + background reference → absorbance
       const analysisResults = [];
       let sampleUri = null;
 
       for (let i = 0; i < uris.length; i++) {
-        const cropped = await ImageManipulator.manipulateAsync(
+        const waterCrop = await ImageManipulator.manipulateAsync(
           uris[i],
           [
-            { crop: { originX: cropX, originY: cropY, width: cropW, height: cropH } },
+            { crop: { originX: wc.originX, originY: wc.originY, width: wc.width, height: wc.height } },
             { resize: { width: 120 } },
           ],
           { format: ImageManipulator.SaveFormat.JPEG, base64: false }
         );
-        if (i === Math.floor(uris.length / 2)) sampleUri = cropped.uri; // middle frame as preview
-        const data = await analyzeImageColors(cropped.uri, { circular: true });
+        const bgCrop = await ImageManipulator.manipulateAsync(
+          uris[i],
+          [
+            { crop: { originX: bc.originX, originY: bc.originY, width: bc.width, height: bc.height } },
+            { resize: { width: 60 } },
+          ],
+          { format: ImageManipulator.SaveFormat.JPEG, base64: false }
+        );
 
-        // Glow gate on the first frame: if the ROI is essentially dark, the
-        // LED is off or the phone is not centred over the aperture — abort
-        // early instead of averaging 25 s of darkness.
-        if (i === 0 && data.r + data.g + data.b < 30) {
-          Alert.alert(
-            'No glow detected',
-            'The measurement circle is dark. Check that the LED is on and slide the phone until the bright disc is centred in the ring.'
-          );
-          setPhase('idle');
-          return;
+        if (i === Math.floor(uris.length / 2)) sampleUri = waterCrop.uri; // middle frame preview
+
+        const water = await analyzeImageColors(waterCrop.uri, { circular: true });
+        const background = await analyzeImageColors(bgCrop.uri);
+
+        // Gate on the first frame.
+        if (i === 0) {
+          if (water.r + water.g + water.b < 30) {
+            Alert.alert(
+              'No glow detected',
+              'The measurement circle is dark. Check that the LED is on and slide the phone until the bright disc is centred in the ring.'
+            );
+            setPhase('idle');
+            return;
+          }
+          if (background.b < 20) {
+            Alert.alert(
+              'Reference patch dark',
+              'The small reference square must sit over BARE lit diffuser (no bottle). Slide the phone so the square shows the plain glowing background, then try again.'
+            );
+            setPhase('idle');
+            return;
+          }
         }
-        analysisResults.push(data);
+
+        analysisResults.push(computeFrameMetrics(water, background));
       }
 
       const averaged = averageAnalysisResults(analysisResults);
@@ -223,7 +262,7 @@ export default function CameraScreen({ navigation }) {
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#1565C0" />
         <Text style={styles.processingTitle}>Analysing {framesCaptured} frames…</Text>
-        <Text style={styles.processingSubtitle}>Averaging blue intensity across all captures</Text>
+        <Text style={styles.processingSubtitle}>Computing absorbance vs the diffuser reference</Text>
       </View>
     );
   }
@@ -245,6 +284,22 @@ export default function CameraScreen({ navigation }) {
         pictureSize={pictureSize}
         onCameraReady={onCameraReady}
       >
+        {/* Background reference patch — user keeps this over BARE lit diffuser */}
+        <View
+          pointerEvents="none"
+          style={[
+            styles.bgPatch,
+            {
+              left: BG_CENTER_X - BG_SIZE / 2,
+              top: BG_CENTER_Y - BG_SIZE / 2,
+              width: BG_SIZE,
+              height: BG_SIZE,
+            },
+          ]}
+        >
+          <Text style={styles.bgPatchLabel}>diffuser{'\n'}reference</Text>
+        </View>
+
         <SafeAreaView style={styles.overlay}>
 
           {/* Top bar */}
@@ -285,8 +340,8 @@ export default function CameraScreen({ navigation }) {
               </View>
             ) : (
               <Text style={styles.guideText}>
-                Lay the phone on the device, camera over the hole.{'\n'}
-                Slide it until the glowing disc is centred in the ring.
+                Glowing disc → in the ring.{'\n'}
+                Small square → on bare lit diffuser (no bottle).
               </Text>
             )}
           </View>
@@ -307,7 +362,7 @@ export default function CameraScreen({ navigation }) {
                   <Text style={styles.startButtonText}>Start 30s Analysis</Text>
                 </TouchableOpacity>
                 <Text style={styles.subHint}>
-                  5s warm-up · 13 frames · averaged blue intensity
+                  5s warm-up · 13 frames · absorbance vs diffuser reference
                 </Text>
               </>
             ) : (
@@ -402,6 +457,20 @@ const styles = StyleSheet.create({
   guideText: {
     color: '#FFF', marginTop: 16, fontSize: 13,
     textShadowColor: '#000', textShadowRadius: 6, textAlign: 'center',
+  },
+
+  bgPatch: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: '#FFEB3B',
+    borderStyle: 'dashed',
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  bgPatchLabel: {
+    color: '#FFEB3B', fontSize: 10, fontWeight: '600', textAlign: 'center',
+    textShadowColor: '#000', textShadowRadius: 4,
   },
 
   bottomBar: { alignItems: 'center', paddingBottom: 16, paddingHorizontal: 24 },

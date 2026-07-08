@@ -33,6 +33,7 @@ export default function ResultScreen({ route, navigation }) {
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState(null);
   const [saved, setSaved]             = useState(false);
+  const [ppmSource, setPpmSource]     = useState(null); // 'absorbance' | 'blue' | null
 
   // Determine which image to display as the analysed-region preview
   const previewUri = sampleUri ?? croppedUri ?? null;
@@ -58,9 +59,15 @@ export default function ResultScreen({ route, navigation }) {
       const calPoints = await loadCalibrationPoints();
       const ppm = computeHardness(data, calPoints);
       const lbl = getHardnessLabel(data.blueDominance);
+      // Detect whether ppm came from the exposure-immune absorbance curve
+      const usingAbs =
+        typeof data.absorbance === 'number' &&
+        calPoints.length >= 2 &&
+        calPoints.every((p) => typeof p.absorbance === 'number');
       setResult(data);
       setHardnessPPM(ppm);
       setLabel(lbl);
+      setPpmSource(ppm !== null ? (usingAbs ? 'absorbance' : 'blue') : null);
     } catch (e) {
       setError(e.message || 'Analysis failed');
     } finally {
@@ -81,6 +88,10 @@ export default function ResultScreen({ route, navigation }) {
       frameCount: result.frameCount ?? 1,
       rejectedFrames: result.rejectedFrames ?? 0,
       blueScoreStdDev: result.blueScoreStdDev,
+      absorbance: result.absorbance ?? null,
+      transmittance: result.transmittance ?? null,
+      bgBlue: result.bgBlue ?? null,
+      ppmSource,
     });
     setSaved(true);
     Alert.alert('Saved', 'Result added to history.');
@@ -127,7 +138,12 @@ export default function ResultScreen({ route, navigation }) {
                   <Text style={[styles.hardnessLabel, { color: label?.color }]}>{label?.label}</Text>
                   <Text style={styles.rangeText}>{label?.range} (estimated)</Text>
                   {hardnessPPM !== null
-                    ? <Text style={styles.ppmText}>{hardnessPPM} ppm CaCO₃</Text>
+                    ? <>
+                        <Text style={styles.ppmText}>{hardnessPPM} ppm CaCO₃</Text>
+                        <Text style={styles.ppmSrc}>
+                          {ppmSource === 'absorbance' ? 'from absorbance curve ✓' : 'from raw blue (drift-prone)'}
+                        </Text>
+                      </>
                     : <Text style={styles.uncalText}>Add calibration points for ppm reading</Text>
                   }
                 </View>
@@ -153,6 +169,41 @@ export default function ResultScreen({ route, navigation }) {
               <View style={styles.barBg}>
                 <View style={[styles.barFill, { width: `${result.blueDominance}%`, backgroundColor: '#29B6F6' }]} />
               </View>
+
+              {/* Absorbance (exposure-immune) — shown when a reference patch was used */}
+              {typeof result.absorbance === 'number' && (
+                <>
+                  <View style={styles.absDivider} />
+                  <View style={styles.metricRow}>
+                    <Text style={[styles.metricName, { fontWeight: '700', color: '#1565C0' }]}>
+                      Absorbance  A = log₁₀(I_bg / I_water)
+                    </Text>
+                    <Text style={[styles.metricValue, { fontSize: 15 }]}>{result.absorbance.toFixed(3)}</Text>
+                  </View>
+                  <View style={styles.barBg}>
+                    <View style={[styles.barFill, {
+                      width: `${Math.min(100, (result.absorbance / 1.0) * 100)}%`,
+                      backgroundColor: '#6A1B9A',
+                    }]} />
+                  </View>
+
+                  <View style={styles.metricRow}>
+                    <Text style={styles.metricName}>Blue Transmittance (water / bg)</Text>
+                    <Text style={styles.metricValue}>
+                      {typeof result.transmittance === 'number' ? `${(result.transmittance * 100).toFixed(1)}%` : '—'}
+                    </Text>
+                  </View>
+                  <View style={styles.metricRow}>
+                    <Text style={styles.metricName}>Reference (bg) Blue · Water Blue</Text>
+                    <Text style={styles.metricValue}>{result.bgBlue} · {result.blueScore}</Text>
+                  </View>
+                  {typeof result.absorbanceStdDev === 'number' && (
+                    <Text style={styles.absNote}>
+                      Absorbance σ = {result.absorbanceStdDev.toFixed(3)} across frames — this metric is immune to auto-exposure drift.
+                    </Text>
+                  )}
+                </>
+              )}
 
               {/* Stability indicator (std dev) */}
               {result.blueScoreStdDev !== undefined && (
@@ -213,7 +264,10 @@ export default function ResultScreen({ route, navigation }) {
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.actionBtn, styles.calBtn]}
-                onPress={() => navigation.navigate('Calibration', { blueScore: result.blueScore })}
+                onPress={() => navigation.navigate('Calibration', {
+                  blueScore: result.blueScore,
+                  absorbance: result.absorbance ?? null,
+                })}
               >
                 <Text style={styles.actionBtnText}>⚙️ Calibrate</Text>
               </TouchableOpacity>
@@ -256,7 +310,10 @@ const styles = StyleSheet.create({
   hardnessLabel: { fontSize: 22, fontWeight: 'bold' },
   rangeText: { color: '#78909C', fontSize: 13, marginTop: 2 },
   ppmText: { color: '#1565C0', fontSize: 16, fontWeight: 'bold', marginTop: 4 },
+  ppmSrc: { color: '#78909C', fontSize: 11, marginTop: 1 },
   uncalText: { color: '#FF8F00', fontSize: 12, marginTop: 4, fontStyle: 'italic' },
+  absDivider: { height: 1, backgroundColor: '#E0E0E0', marginVertical: 12 },
+  absNote: { color: '#78909C', fontSize: 11, marginTop: 2, marginBottom: 4, lineHeight: 15 },
 
   metricsCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 16, elevation: 2 },
   metricsTitle: { fontSize: 15, fontWeight: 'bold', color: '#1565C0', marginBottom: 14 },

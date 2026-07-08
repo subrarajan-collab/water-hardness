@@ -3,11 +3,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const CALIBRATION_KEY = 'calibration_points';
 const HISTORY_KEY = 'test_history';
 
-export async function saveCalibrationPoint(blueScore, hardnessPPM, label = '') {
+export async function saveCalibrationPoint(blueScore, hardnessPPM, label = '', absorbance = null) {
   const existing = await loadCalibrationPoints();
   const point = {
     id: Date.now().toString(),
     blueScore,
+    absorbance, // exposure-immune key; null for legacy manual points
     hardness: hardnessPPM,
     label,
     createdAt: new Date().toISOString(),
