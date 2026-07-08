@@ -64,34 +64,53 @@ export async function analyzeImageColors(uri, opts = {}) {
   };
 }
 
-// Combines a water-region analysis with a background (bare diffuser) analysis
-// into a single per-frame result carrying the exposure-immune metrics.
+// Combines a water-region analysis with one or two background (bare diffuser)
+// reference analyses into a single per-frame result carrying exposure-immune
+// per-channel absorbance.
 //
 // Why: with phone auto-exposure the raw blue of the water shifts frame-to-frame
 // and day-to-day. But the BACKGROUND shifts by the same factor, so the ratio
-// I_water / I_background is immune to it. Absorbance A = log10(I_bg / I_water)
+// I_water / I_reference is immune to it. Absorbance A = log10(I_ref / I_water)
 // is the linear-in-concentration quantity (Beer–Lambert) we calibrate against.
-export function computeFrameMetrics(water, background) {
-  const wB = water.b;
-  const bgB = background.b;
-  let transmittance = null;
-  let absorbance = null;
-  if (bgB > 0 && wB > 0) {
-    transmittance = wB / bgB;               // 0..~1, blue transmitted fraction
-    absorbance = Math.log10(bgB / wB);      // 0 = clear, higher = more colour
+//
+// Two references (left + right of the bottle, same height) are averaged to
+// cancel the horizontal brightness gradient of the diffuser panel.
+export function computeFrameMetrics(water, bgLeft, bgRight = null) {
+  const ref = bgRight
+    ? {
+        r: (bgLeft.r + bgRight.r) / 2,
+        g: (bgLeft.g + bgRight.g) / 2,
+        b: (bgLeft.b + bgRight.b) / 2,
+      }
+    : { r: bgLeft.r, g: bgLeft.g, b: bgLeft.b };
+
+  const absCh = (refV, wV) =>
+    refV > 0 && wV > 0 ? parseFloat(Math.log10(refV / wV).toFixed(4)) : null;
+
+  // Left/right patch mismatch (blue channel) — alignment quality indicator.
+  let refMismatch = null;
+  if (bgRight) {
+    const mean = (bgLeft.b + bgRight.b) / 2;
+    refMismatch = mean > 0 ? parseFloat((Math.abs(bgLeft.b - bgRight.b) / mean).toFixed(4)) : null;
   }
+
   return {
     // water region (kept for display / legacy calibration / label)
     r: water.r, g: water.g, b: water.b,
     blueScore: water.blueScore,
     blueDominance: water.blueDominance,
     pixelCount: water.pixelCount,
-    // background reference
-    bgR: background.r, bgG: background.g, bgB: background.b,
-    bgBlue: background.b,
-    // exposure-immune metrics
-    transmittance: transmittance !== null ? parseFloat(transmittance.toFixed(4)) : null,
-    absorbance: absorbance !== null ? parseFloat(absorbance.toFixed(4)) : null,
+    // raw reference values (kept for result metadata)
+    bgL: { r: bgLeft.r, g: bgLeft.g, b: bgLeft.b },
+    bgRt: bgRight ? { r: bgRight.r, g: bgRight.g, b: bgRight.b } : null,
+    bgBlue: Math.round(ref.b),
+    refMismatch,
+    // exposure-immune metrics — absorbance per channel; A_blue is primary
+    absorbance: absCh(ref.b, water.b),
+    absorbanceR: absCh(ref.r, water.r),
+    absorbanceG: absCh(ref.g, water.g),
+    transmittance:
+      ref.b > 0 && water.b > 0 ? parseFloat((water.b / ref.b).toFixed(4)) : null,
   };
 }
 
@@ -155,6 +174,25 @@ export function averageAnalysisResults(allResults) {
     );
     out.transmittance = parseFloat(mean((r) => r.transmittance).toFixed(4));
     out.bgBlue = Math.round(mean((r) => r.bgBlue));
+    if (results.every((r) => typeof r.absorbanceR === 'number')) {
+      out.absorbanceR = parseFloat(mean((r) => r.absorbanceR).toFixed(4));
+    }
+    if (results.every((r) => typeof r.absorbanceG === 'number')) {
+      out.absorbanceG = parseFloat(mean((r) => r.absorbanceG).toFixed(4));
+    }
+    const mm = results.filter((r) => typeof r.refMismatch === 'number');
+    if (mm.length > 0) {
+      out.refMismatch = parseFloat(
+        (mm.reduce((s, r) => s + r.refMismatch, 0) / mm.length).toFixed(4)
+      );
+    }
+    // Raw per-frame patch + ROI values (result metadata, kept frames only)
+    out.frames = results.map((r) => ({
+      w: [r.r, r.g, r.b],
+      l: r.bgL ? [r.bgL.r, r.bgL.g, r.bgL.b] : null,
+      rt: r.bgRt ? [r.bgRt.r, r.bgRt.g, r.bgRt.b] : null,
+      A: r.absorbance,
+    }));
   }
 
   return out;

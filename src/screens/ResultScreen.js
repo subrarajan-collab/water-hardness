@@ -89,8 +89,13 @@ export default function ResultScreen({ route, navigation }) {
       rejectedFrames: result.rejectedFrames ?? 0,
       blueScoreStdDev: result.blueScoreStdDev,
       absorbance: result.absorbance ?? null,
+      absorbanceR: result.absorbanceR ?? null,
+      absorbanceG: result.absorbanceG ?? null,
       transmittance: result.transmittance ?? null,
       bgBlue: result.bgBlue ?? null,
+      refMismatch: result.refMismatch ?? null,
+      // Raw per-frame patch + ROI values (kept frames), for offline analysis
+      frames: result.frames ?? null,
       ppmSource,
     });
     setSaved(true);
@@ -137,6 +142,9 @@ export default function ResultScreen({ route, navigation }) {
                 <View style={styles.labelCol}>
                   <Text style={[styles.hardnessLabel, { color: label?.color }]}>{label?.label}</Text>
                   <Text style={styles.rangeText}>{label?.range} (estimated)</Text>
+                  {typeof result.absorbance === 'number' && (
+                    <Text style={styles.absPrimary}>A_blue = {result.absorbance.toFixed(3)}</Text>
+                  )}
                   {hardnessPPM !== null
                     ? <>
                         <Text style={styles.ppmText}>{hardnessPPM} ppm CaCO₃</Text>
@@ -154,8 +162,67 @@ export default function ResultScreen({ route, navigation }) {
             <View style={styles.metricsCard}>
               <Text style={styles.metricsTitle}>Colour Analysis</Text>
 
+              {/* Absorbance (exposure-immune) — the PRIMARY metric */}
+              {typeof result.absorbance === 'number' && (
+                <>
+                  <View style={styles.metricRow}>
+                    <Text style={[styles.metricName, { fontWeight: '700', color: '#1565C0', fontSize: 14 }]}>
+                      Absorbance  A_blue = log₁₀(I_ref / I_water)
+                    </Text>
+                    <Text style={[styles.metricValue, { fontSize: 18 }]}>{result.absorbance.toFixed(3)}</Text>
+                  </View>
+                  <View style={styles.barBg}>
+                    <View style={[styles.barFill, {
+                      width: `${Math.min(100, (result.absorbance / 1.5) * 100)}%`,
+                      backgroundColor: '#6A1B9A',
+                    }]} />
+                  </View>
+
+                  {(typeof result.absorbanceR === 'number' || typeof result.absorbanceG === 'number') && (
+                    <View style={styles.metricRow}>
+                      <Text style={styles.metricName}>A_red · A_green (per channel)</Text>
+                      <Text style={styles.metricValue}>
+                        {typeof result.absorbanceR === 'number' ? result.absorbanceR.toFixed(3) : '—'}
+                        {' · '}
+                        {typeof result.absorbanceG === 'number' ? result.absorbanceG.toFixed(3) : '—'}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.metricRow}>
+                    <Text style={styles.metricName}>Blue Transmittance (water / ref)</Text>
+                    <Text style={styles.metricValue}>
+                      {typeof result.transmittance === 'number' ? `${(result.transmittance * 100).toFixed(1)}%` : '—'}
+                    </Text>
+                  </View>
+                  <View style={styles.metricRow}>
+                    <Text style={styles.metricName}>Reference Blue · Water Blue</Text>
+                    <Text style={styles.metricValue}>{result.bgBlue} · {result.blueScore}</Text>
+                  </View>
+                  {typeof result.refMismatch === 'number' && (
+                    <View style={styles.metricRow}>
+                      <Text style={styles.metricName}>L/R patch mismatch</Text>
+                      <Text style={[styles.metricValue, {
+                        color: result.refMismatch <= 0.04 ? '#2E7D32' : '#C62828',
+                      }]}>
+                        {(result.refMismatch * 100).toFixed(1)}%
+                        {result.refMismatch <= 0.04 ? ' ✓' : ' ⚠'}
+                      </Text>
+                    </View>
+                  )}
+                  {typeof result.absorbanceStdDev === 'number' && (
+                    <Text style={styles.absNote}>
+                      Absorbance σ = {result.absorbanceStdDev.toFixed(3)} across frames — immune to auto-exposure drift.
+                    </Text>
+                  )}
+                  <View style={styles.absDivider} />
+                </>
+              )}
+
+              {/* Raw values — secondary once absorbance is available */}
               <View style={styles.metricRow}>
-                <Text style={styles.metricName}>Blue Score (0–255)</Text>
+                <Text style={styles.metricName}>
+                  Blue Score (0–255){typeof result.absorbance === 'number' ? ' — secondary' : ''}
+                </Text>
                 <Text style={styles.metricValue}>{result.blueScore}</Text>
               </View>
               <View style={styles.barBg}>
@@ -169,41 +236,6 @@ export default function ResultScreen({ route, navigation }) {
               <View style={styles.barBg}>
                 <View style={[styles.barFill, { width: `${result.blueDominance}%`, backgroundColor: '#29B6F6' }]} />
               </View>
-
-              {/* Absorbance (exposure-immune) — shown when a reference patch was used */}
-              {typeof result.absorbance === 'number' && (
-                <>
-                  <View style={styles.absDivider} />
-                  <View style={styles.metricRow}>
-                    <Text style={[styles.metricName, { fontWeight: '700', color: '#1565C0' }]}>
-                      Absorbance  A = log₁₀(I_bg / I_water)
-                    </Text>
-                    <Text style={[styles.metricValue, { fontSize: 15 }]}>{result.absorbance.toFixed(3)}</Text>
-                  </View>
-                  <View style={styles.barBg}>
-                    <View style={[styles.barFill, {
-                      width: `${Math.min(100, (result.absorbance / 1.0) * 100)}%`,
-                      backgroundColor: '#6A1B9A',
-                    }]} />
-                  </View>
-
-                  <View style={styles.metricRow}>
-                    <Text style={styles.metricName}>Blue Transmittance (water / bg)</Text>
-                    <Text style={styles.metricValue}>
-                      {typeof result.transmittance === 'number' ? `${(result.transmittance * 100).toFixed(1)}%` : '—'}
-                    </Text>
-                  </View>
-                  <View style={styles.metricRow}>
-                    <Text style={styles.metricName}>Reference (bg) Blue · Water Blue</Text>
-                    <Text style={styles.metricValue}>{result.bgBlue} · {result.blueScore}</Text>
-                  </View>
-                  {typeof result.absorbanceStdDev === 'number' && (
-                    <Text style={styles.absNote}>
-                      Absorbance σ = {result.absorbanceStdDev.toFixed(3)} across frames — this metric is immune to auto-exposure drift.
-                    </Text>
-                  )}
-                </>
-              )}
 
               {/* Stability indicator (std dev) */}
               {result.blueScoreStdDev !== undefined && (
@@ -309,6 +341,7 @@ const styles = StyleSheet.create({
   labelCol: { flex: 1 },
   hardnessLabel: { fontSize: 22, fontWeight: 'bold' },
   rangeText: { color: '#78909C', fontSize: 13, marginTop: 2 },
+  absPrimary: { color: '#6A1B9A', fontSize: 20, fontWeight: 'bold', marginTop: 4 },
   ppmText: { color: '#1565C0', fontSize: 16, fontWeight: 'bold', marginTop: 4 },
   ppmSrc: { color: '#78909C', fontSize: 11, marginTop: 1 },
   uncalText: { color: '#FF8F00', fontSize: 12, marginTop: 4, fontStyle: 'italic' },

@@ -11,23 +11,29 @@ import {
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImageManipulator from 'expo-image-manipulator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { analyzeImageColors, averageAnalysisResults, computeFrameMetrics } from '../utils/colorAnalysis';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
-// Circular guide ring for the vertical (look-down-the-tube) device.
-// The glowing disc of the tube must be centred inside this ring.
-const GUIDE_D = 220; // on-screen diameter, px
-const GUIDE_W = GUIDE_D;
-const GUIDE_H = GUIDE_D;
+// ─── Device layouts ──────────────────────────────────────────────────────────
+// 'bottle' (side-view): camera looks horizontally at a backlit bottle.
+//   Water ROI = vertical rectangle on the bottle body; TWO reference patches
+//   on bare lit panel, one each side of the bottle at the SAME height —
+//   averaged to cancel the horizontal panel gradient.
+// 'tube' (vertical): camera looks down the tube; circular ROI + one reference
+//   patch above the ring.
+const MODE_KEY = 'device_mode';
 
-// Background reference patch: a small square the user positions over BARE lit
-// diffuser (no bottle). Its blue level is the incident light I_background.
-// Scoring on log10(I_background / I_water) makes the reading immune to phone
-// auto-exposure drift — a raw blue of 141 today would not mean 141 tomorrow.
-const BG_SIZE = 80; // on-screen square side, px
-const BG_CENTER_X = SCREEN_W / 2;
-const BG_CENTER_Y = Math.max(115, (SCREEN_H - GUIDE_H) / 2 - 62); // above the ring
+// Bottle layout (bottle spans ~20–25% of frame width)
+const WATER_W = Math.round(SCREEN_W * 0.16);   // inside the liquid silhouette
+const WATER_H = 260;
+const PATCH = 72;                               // reference square side
+const PATCH_OFFSET_X = Math.round(SCREEN_W * 0.30); // patch centres at ±30% width
+const ALIGN_WARN_FRACTION = 0.04;               // warn if L/R differ by >4%
+
+// Tube layout
+const GUIDE_D = 220;
 
 const TOTAL_SECONDS = 30;
 const CAPTURE_EVERY_N_SECONDS = 2; // 1 frame every 2 s
@@ -39,6 +45,7 @@ export default function CameraScreen({ navigation }) {
   const [countdown, setCountdown] = useState(TOTAL_SECONDS);
   const [framesCaptured, setFramesCaptured] = useState(0);
   const [pictureSize, setPictureSize] = useState(undefined);
+  const [mode, setMode] = useState('bottle'); // 'bottle' | 'tube'
 
   const cameraRef = useRef(null);
   const framesRef = useRef([]);          // collected raw frame URIs
@@ -49,6 +56,17 @@ export default function CameraScreen({ navigation }) {
   useEffect(() => {
     if (permission && !permission.granted) requestPermission();
   }, [permission]);
+
+  useEffect(() => {
+    AsyncStorage.getItem(MODE_KEY).then((m) => {
+      if (m === 'tube' || m === 'bottle') setMode(m);
+    }).catch(() => {});
+  }, []);
+
+  const switchMode = (m) => {
+    setMode(m);
+    AsyncStorage.setItem(MODE_KEY, m).catch(() => {});
+  };
 
   // Pick an explicit, consistent picture size (~1600 px wide) so pixel
   // geometry is identical across runs and devices.
@@ -70,8 +88,138 @@ export default function CameraScreen({ navigation }) {
     }
   };
 
+  // ─── ROI geometry (screen → photo mapping) ────────────────────────────────
+  // The preview fills the screen in "cover" mode: the photo is scaled uniformly
+  // until it covers SCREEN_W × SCREEN_H and the overflow is cropped equally.
+  const screenRects = () => {
+    if (mode === 'bottle') {
+      return {
+        water: {
+          left: (SCREEN_W - WATER_W) / 2,
+          top: (SCREEN_H - WATER_H) / 2,
+          w: WATER_W, h: WATER_H,
+        },
+        bgL: {
+          left: SCREEN_W / 2 - PATCH_OFFSET_X - PATCH / 2,
+          top: SCREEN_H / 2 - PATCH / 2, // SAME height as water ROI centre
+          w: PATCH, h: PATCH,
+        },
+        bgR: {
+          left: SCREEN_W / 2 + PATCH_OFFSET_X - PATCH / 2,
+          top: SCREEN_H / 2 - PATCH / 2,
+          w: PATCH, h: PATCH,
+        },
+      };
+    }
+    // tube mode: circle + single patch above
+    return {
+      water: {
+        left: (SCREEN_W - GUIDE_D) / 2,
+        top: (SCREEN_H - GUIDE_D) / 2,
+        w: GUIDE_D, h: GUIDE_D,
+      },
+      bgL: {
+        left: SCREEN_W / 2 - PATCH / 2,
+        top: Math.max(115, (SCREEN_H - GUIDE_D) / 2 - 62) - PATCH / 2,
+        w: PATCH, h: PATCH,
+      },
+      bgR: null,
+    };
+  };
+
+  const toPhotoRects = (imgW, imgH) => {
+    const scale = Math.max(SCREEN_W / imgW, SCREEN_H / imgH);
+    const dx = (imgW * scale - SCREEN_W) / 2;
+    const dy = (imgH * scale - SCREEN_H) / 2;
+    const conv = (r) => {
+      if (!r) return null;
+      const originX = Math.max(0, Math.round((r.left + dx) / scale));
+      const originY = Math.max(0, Math.round((r.top + dy) / scale));
+      return {
+        originX,
+        originY,
+        width: Math.min(Math.round(r.w / scale), imgW - originX),
+        height: Math.min(Math.round(r.h / scale), imgH - originY),
+      };
+    };
+    const s = screenRects();
+    return { water: conv(s.water), bgL: conv(s.bgL), bgR: conv(s.bgR) };
+  };
+
+  const cropAndAnalyze = async (uri, rect, resizeW, circular) => {
+    const c = await ImageManipulator.manipulateAsync(
+      uri,
+      [
+        { crop: rect },
+        { resize: { width: resizeW } },
+      ],
+      { format: ImageManipulator.SaveFormat.JPEG, base64: false }
+    );
+    const data = await analyzeImageColors(c.uri, { circular });
+    return { data, uri: c.uri };
+  };
+
+  // Analyse one raw frame → per-frame metrics (+ water crop uri for preview)
+  const analyzeFrame = async (uri, rects) => {
+    const water = await cropAndAnalyze(uri, rects.water, 120, mode === 'tube');
+    const bgL = await cropAndAnalyze(uri, rects.bgL, 60, false);
+    const bgR = rects.bgR ? await cropAndAnalyze(uri, rects.bgR, 60, false) : null;
+    return {
+      metrics: computeFrameMetrics(water.data, bgL.data, bgR ? bgR.data : null),
+      water: water.data,
+      bgL: bgL.data,
+      bgR: bgR ? bgR.data : null,
+      previewUri: water.uri,
+    };
+  };
+
+  // ─── Pre-capture alignment probe (bottle mode) ────────────────────────────
+  // Takes one photo and checks the two reference patches match within ~4%.
+  // A mismatch means the bottle is off-centre or the panel is unevenly lit.
+  const alignmentProbe = async () => {
+    const photo = await cameraRef.current.takePictureAsync({
+      quality: 0.7, base64: false, skipProcessing: true,
+    });
+    const probe = await ImageManipulator.manipulateAsync(photo.uri, [], {});
+    const rects = toPhotoRects(probe.width, probe.height);
+    const f = await analyzeFrame(photo.uri, rects);
+
+    if (f.bgL.b < 20 || (f.bgR && f.bgR.b < 20)) {
+      Alert.alert(
+        'Reference patch dark',
+        'Both dashed squares must sit on bare lit panel beside the bottle. Reposition and try again.'
+      );
+      return false;
+    }
+    if (f.metrics.refMismatch !== null && f.metrics.refMismatch > ALIGN_WARN_FRACTION) {
+      const pct = (f.metrics.refMismatch * 100).toFixed(1);
+      return new Promise((resolve) => {
+        Alert.alert(
+          'Alignment warning',
+          `Left and right reference patches differ by ${pct}% (limit ${ALIGN_WARN_FRACTION * 100}%). ` +
+          'The bottle may be off-centre or the panel unevenly lit. Recentre for best accuracy.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Measure anyway', onPress: () => resolve(true) },
+          ]
+        );
+      });
+    }
+    return true;
+  };
+
   // ─── Start 30-second recording ───────────────────────────────────────────
-  const startRecording = () => {
+  const startRecording = async () => {
+    if (mode === 'bottle') {
+      setPhase('processing'); // brief spinner during the probe shot
+      try {
+        const ok = await alignmentProbe();
+        if (!ok) { setPhase('idle'); return; }
+      } catch (_) {
+        // probe failure is not fatal — proceed to the run
+      }
+    }
+
     framesRef.current = [];
     secondsRef.current = TOTAL_SECONDS;
     isTakingRef.current = false;
@@ -133,89 +281,40 @@ export default function CameraScreen({ navigation }) {
     }
 
     try {
-      // Get actual image dimensions from the first frame so we can map
-      // the on-screen guide frame → image crop coordinates.
       const probe = await ImageManipulator.manipulateAsync(uris[0], [], {});
-      const imgW = probe.width;
-      const imgH = probe.height;
+      const rects = toPhotoRects(probe.width, probe.height);
 
-      // Map guide frame (centred on screen) to image pixel coordinates.
-      // The preview fills the screen in "cover" mode: the photo is scaled
-      // uniformly until it covers SCREEN_W × SCREEN_H, and the overflow is
-      // cropped equally on both sides. Photo aspect (4:3) ≠ screen aspect,
-      // so a plain imgW/SCREEN_W scale would land the ROI off-target.
-      const scale = Math.max(SCREEN_W / imgW, SCREEN_H / imgH);
-      const dx = (imgW * scale - SCREEN_W) / 2; // hidden preview margin (px, screen units)
-      const dy = (imgH * scale - SCREEN_H) / 2;
-
-      // screen point → photo point: (screen + hiddenMargin) / scale
-      const toPhoto = (leftS, topS, sizeW, sizeH) => ({
-        originX: Math.max(0, Math.round((leftS + dx) / scale)),
-        originY: Math.max(0, Math.round((topS + dy) / scale)),
-        width: Math.round(sizeW / scale),
-        height: Math.round(sizeH / scale),
-      });
-
-      // Water disc ROI (centred guide ring)
-      const guideLeft = (SCREEN_W - GUIDE_W) / 2;
-      const guideTop  = (SCREEN_H - GUIDE_H) / 2;
-      const wc = toPhoto(guideLeft, guideTop, GUIDE_W, GUIDE_H);
-      wc.width = Math.min(wc.width, imgW - wc.originX);
-      wc.height = Math.min(wc.height, imgH - wc.originY);
-
-      // Background reference ROI (bare diffuser patch above the ring)
-      const bc = toPhoto(BG_CENTER_X - BG_SIZE / 2, BG_CENTER_Y - BG_SIZE / 2, BG_SIZE, BG_SIZE);
-      bc.width = Math.min(bc.width, imgW - bc.originX);
-      bc.height = Math.min(bc.height, imgH - bc.originY);
-
-      // Analyse each frame: water disc + background reference → absorbance
       const analysisResults = [];
       let sampleUri = null;
 
       for (let i = 0; i < uris.length; i++) {
-        const waterCrop = await ImageManipulator.manipulateAsync(
-          uris[i],
-          [
-            { crop: { originX: wc.originX, originY: wc.originY, width: wc.width, height: wc.height } },
-            { resize: { width: 120 } },
-          ],
-          { format: ImageManipulator.SaveFormat.JPEG, base64: false }
-        );
-        const bgCrop = await ImageManipulator.manipulateAsync(
-          uris[i],
-          [
-            { crop: { originX: bc.originX, originY: bc.originY, width: bc.width, height: bc.height } },
-            { resize: { width: 60 } },
-          ],
-          { format: ImageManipulator.SaveFormat.JPEG, base64: false }
-        );
+        const f = await analyzeFrame(uris[i], rects);
 
-        if (i === Math.floor(uris.length / 2)) sampleUri = waterCrop.uri; // middle frame preview
+        if (i === Math.floor(uris.length / 2)) sampleUri = f.previewUri;
 
-        const water = await analyzeImageColors(waterCrop.uri, { circular: true });
-        const background = await analyzeImageColors(bgCrop.uri);
-
-        // Gate on the first frame.
+        // Gates on the first frame
         if (i === 0) {
-          if (water.r + water.g + water.b < 30) {
+          if (f.water.r + f.water.g + f.water.b < 30) {
             Alert.alert(
-              'No glow detected',
-              'The measurement circle is dark. Check that the LED is on and slide the phone until the bright disc is centred in the ring.'
+              'Water region dark',
+              mode === 'bottle'
+                ? 'The water rectangle is dark. Check the LED panel is on and the bottle is centred.'
+                : 'The measurement circle is dark. Check the LED and centre the glowing disc in the ring.'
             );
             setPhase('idle');
             return;
           }
-          if (background.b < 20) {
+          if (f.bgL.b < 20 || (f.bgR && f.bgR.b < 20)) {
             Alert.alert(
               'Reference patch dark',
-              'The small reference square must sit over BARE lit diffuser (no bottle). Slide the phone so the square shows the plain glowing background, then try again.'
+              'The dashed reference square(s) must sit on bare lit panel. Reposition and try again.'
             );
             setPhase('idle');
             return;
           }
         }
 
-        analysisResults.push(computeFrameMetrics(water, background));
+        analysisResults.push(f.metrics);
       }
 
       const averaged = averageAnalysisResults(analysisResults);
@@ -224,6 +323,7 @@ export default function CameraScreen({ navigation }) {
         analysisData: averaged,
         sampleUri: sampleUri ?? uris[0],
         frameCount: analysisResults.length,
+        deviceMode: mode,
       });
     } catch (err) {
       Alert.alert('Processing error', err.message || 'Failed to analyse frames.');
@@ -261,16 +361,21 @@ export default function CameraScreen({ navigation }) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#1565C0" />
-        <Text style={styles.processingTitle}>Analysing {framesCaptured} frames…</Text>
-        <Text style={styles.processingSubtitle}>Computing absorbance vs the diffuser reference</Text>
+        <Text style={styles.processingTitle}>
+          {framesCaptured > 0 ? `Analysing ${framesCaptured} frames…` : 'Checking alignment…'}
+        </Text>
+        <Text style={styles.processingSubtitle}>
+          Per-channel absorbance vs the panel reference
+        </Text>
       </View>
     );
   }
 
-  // ─── Progress ring helper ─────────────────────────────────────────────────
   const progress = phase === 'recording'
     ? ((TOTAL_SECONDS - countdown) / TOTAL_SECONDS)
     : 0;
+
+  const s = screenRects();
 
   return (
     <View style={styles.container}>
@@ -284,21 +389,45 @@ export default function CameraScreen({ navigation }) {
         pictureSize={pictureSize}
         onCameraReady={onCameraReady}
       >
-        {/* Background reference patch — user keeps this over BARE lit diffuser */}
+        {/* ── ROI overlays ── */}
+        {/* Water region */}
         <View
           pointerEvents="none"
           style={[
-            styles.bgPatch,
+            mode === 'bottle' ? styles.waterRect : styles.guideCircle,
+            phase === 'recording' && styles.roiActive,
             {
-              left: BG_CENTER_X - BG_SIZE / 2,
-              top: BG_CENTER_Y - BG_SIZE / 2,
-              width: BG_SIZE,
-              height: BG_SIZE,
+              left: s.water.left, top: s.water.top,
+              width: s.water.w, height: s.water.h,
             },
           ]}
         >
-          <Text style={styles.bgPatchLabel}>diffuser{'\n'}reference</Text>
+          {phase === 'recording' && (
+            <View style={styles.countdownBadge}>
+              <Text style={styles.countdownText}>{countdown}s</Text>
+            </View>
+          )}
         </View>
+
+        {/* Reference patches */}
+        <View
+          pointerEvents="none"
+          style={[styles.bgPatch, {
+            left: s.bgL.left, top: s.bgL.top, width: s.bgL.w, height: s.bgL.h,
+          }]}
+        >
+          <Text style={styles.bgPatchLabel}>panel{'\n'}ref L</Text>
+        </View>
+        {s.bgR && (
+          <View
+            pointerEvents="none"
+            style={[styles.bgPatch, {
+              left: s.bgR.left, top: s.bgR.top, width: s.bgR.w, height: s.bgR.h,
+            }]}
+          >
+            <Text style={styles.bgPatchLabel}>panel{'\n'}ref R</Text>
+          </View>
+        )}
 
         <SafeAreaView style={styles.overlay}>
 
@@ -316,19 +445,8 @@ export default function CameraScreen({ navigation }) {
             <View style={{ width: 40 }} />
           </View>
 
-          {/* Guide frame + countdown */}
+          {/* Middle spacer (ROIs are absolutely positioned) */}
           <View style={styles.guideContainer}>
-            <View style={[
-              styles.guideFrame,
-              phase === 'recording' && styles.guideFrameActive,
-            ]}>
-              {phase === 'recording' && (
-                <View style={styles.countdownBadge}>
-                  <Text style={styles.countdownText}>{countdown}s</Text>
-                </View>
-              )}
-            </View>
-
             {phase === 'recording' ? (
               <View style={styles.progressRow}>
                 <View style={styles.progressBg}>
@@ -340,8 +458,9 @@ export default function CameraScreen({ navigation }) {
               </View>
             ) : (
               <Text style={styles.guideText}>
-                Glowing disc → in the ring.{'\n'}
-                Small square → on bare lit diffuser (no bottle).
+                {mode === 'bottle'
+                  ? 'Bottle in the centre rectangle.\nDashed squares on bare lit panel, both sides.'
+                  : 'Glowing disc → in the ring.\nSmall square → on bare lit diffuser (no bottle).'}
               </Text>
             )}
           </View>
@@ -350,8 +469,25 @@ export default function CameraScreen({ navigation }) {
           <View style={styles.bottomBar}>
             {phase === 'idle' ? (
               <>
+                {/* Device mode toggle */}
+                <View style={styles.modeRow}>
+                  {[['bottle', '🍼 Bottle (side)'], ['tube', '🧪 Tube (top)']].map(([m, lbl]) => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[styles.modeBtn, mode === m && styles.modeBtnActive]}
+                      onPress={() => switchMode(m)}
+                    >
+                      <Text style={[styles.modeBtnText, mode === m && styles.modeBtnTextActive]}>
+                        {lbl}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
                 <Text style={styles.hint}>
-                  LED on · Tube filled to 10 mL mark · Disc centred
+                  {mode === 'bottle'
+                    ? 'LED panel on · Bottle centred · Patches on bare panel'
+                    : 'LED on · Tube filled to 10 mL mark · Disc centred'}
                 </Text>
                 <TouchableOpacity
                   style={styles.startButton}
@@ -362,7 +498,7 @@ export default function CameraScreen({ navigation }) {
                   <Text style={styles.startButtonText}>Start 30s Analysis</Text>
                 </TouchableOpacity>
                 <Text style={styles.subHint}>
-                  5s warm-up · 13 frames · absorbance vs diffuser reference
+                  5s warm-up · 13 frames · A = log₁₀(I_ref / I_water) per frame
                 </Text>
               </>
             ) : (
@@ -420,20 +556,26 @@ const styles = StyleSheet.create({
     textShadowColor: '#000', textShadowRadius: 4,
   },
 
-  guideContainer: { alignItems: 'center', justifyContent: 'center', flex: 1 },
-  guideFrame: {
-    width: GUIDE_W,
-    height: GUIDE_H,
+  guideContainer: { alignItems: 'center', justifyContent: 'flex-end', flex: 1, paddingBottom: 40 },
+
+  waterRect: {
+    position: 'absolute',
     borderWidth: 3,
     borderColor: '#29B6F6',
-    borderRadius: GUIDE_D / 2,
-    backgroundColor: 'transparent',
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  guideFrameActive: {
-    borderColor: '#FF6F00',
+  guideCircle: {
+    position: 'absolute',
     borderWidth: 3,
+    borderColor: '#29B6F6',
+    borderRadius: GUIDE_D / 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  roiActive: {
+    borderColor: '#FF6F00',
     shadowColor: '#FF6F00',
     shadowOpacity: 0.8,
     shadowRadius: 8,
@@ -441,23 +583,10 @@ const styles = StyleSheet.create({
   countdownBadge: {
     backgroundColor: 'rgba(0,0,0,0.6)',
     borderRadius: 24,
-    paddingHorizontal: 20,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
   },
-  countdownText: { color: '#FF6F00', fontSize: 36, fontWeight: 'bold' },
-
-  progressRow: { alignItems: 'center', marginTop: 16, width: '80%' },
-  progressBg: {
-    width: '100%', height: 6, borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.25)', overflow: 'hidden',
-  },
-  progressFill: { height: '100%', backgroundColor: '#FF6F00', borderRadius: 3 },
-  framesBadge: { color: '#FFF', fontSize: 13, marginTop: 8, textShadowColor: '#000', textShadowRadius: 4 },
-
-  guideText: {
-    color: '#FFF', marginTop: 16, fontSize: 13,
-    textShadowColor: '#000', textShadowRadius: 6, textAlign: 'center',
-  },
+  countdownText: { color: '#FF6F00', fontSize: 30, fontWeight: 'bold' },
 
   bgPatch: {
     position: 'absolute',
@@ -473,9 +602,32 @@ const styles = StyleSheet.create({
     textShadowColor: '#000', textShadowRadius: 4,
   },
 
+  progressRow: { alignItems: 'center', width: '80%' },
+  progressBg: {
+    width: '100%', height: 6, borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.25)', overflow: 'hidden',
+  },
+  progressFill: { height: '100%', backgroundColor: '#FF6F00', borderRadius: 3 },
+  framesBadge: { color: '#FFF', fontSize: 13, marginTop: 8, textShadowColor: '#000', textShadowRadius: 4 },
+
+  guideText: {
+    color: '#FFF', fontSize: 13,
+    textShadowColor: '#000', textShadowRadius: 6, textAlign: 'center',
+  },
+
   bottomBar: { alignItems: 'center', paddingBottom: 16, paddingHorizontal: 24 },
   hint: { color: 'rgba(255,255,255,0.75)', fontSize: 12, marginBottom: 14, textAlign: 'center' },
   subHint: { color: 'rgba(255,255,255,0.5)', fontSize: 11, marginTop: 10, textAlign: 'center' },
+
+  modeRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  modeBtn: {
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)',
+    borderRadius: 20, paddingVertical: 8, paddingHorizontal: 16,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  modeBtnActive: { backgroundColor: '#1565C0', borderColor: '#1565C0' },
+  modeBtnText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '600' },
+  modeBtnTextActive: { color: '#FFF' },
 
   startButton: {
     flexDirection: 'row', alignItems: 'center', gap: 10,

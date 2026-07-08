@@ -17,12 +17,12 @@ import {
 } from '../utils/calibration';
 
 export default function CalibrationScreen({ route, navigation }) {
-  const prefillBlueScore = route.params?.blueScore;
+  const prefillBlueScore = route.params?.blueScore ?? null;
   const prefillAbsorbance = route.params?.absorbance ?? null;
 
   const [points, setPoints] = useState([]);
-  const [blueScore, setBlueScore] = useState(
-    prefillBlueScore ? String(prefillBlueScore) : ''
+  const [absorbanceIn, setAbsorbanceIn] = useState(
+    prefillAbsorbance !== null ? String(prefillAbsorbance) : ''
   );
   const [hardnessPPM, setHardnessPPM] = useState('');
   const [label, setLabel] = useState('');
@@ -37,11 +37,11 @@ export default function CalibrationScreen({ route, navigation }) {
   };
 
   const addPoint = async () => {
-    const bs = parseFloat(blueScore);
+    const a = parseFloat(absorbanceIn);
     const ppm = parseFloat(hardnessPPM);
 
-    if (isNaN(bs) || bs < 0 || bs > 255) {
-      Alert.alert('Invalid', 'Blue score must be between 0 and 255.');
+    if (isNaN(a) || a < 0 || a > 3) {
+      Alert.alert('Invalid', 'Absorbance must be a number between 0 and 3 (typically 0–1.5).');
       return;
     }
     if (isNaN(ppm) || ppm < 0) {
@@ -49,14 +49,14 @@ export default function CalibrationScreen({ route, navigation }) {
       return;
     }
 
-    // Attach the exposure-immune absorbance only if the blue-score field still
+    // Keep the raw blue score alongside only if the absorbance field still
     // matches the measurement it came from (i.e. the user didn't hand-edit it).
-    const absorbance =
-      prefillAbsorbance !== null && bs === prefillBlueScore ? prefillAbsorbance : null;
+    const blueScore =
+      prefillAbsorbance !== null && a === prefillAbsorbance ? prefillBlueScore : null;
 
-    const updated = await saveCalibrationPoint(bs, ppm, label.trim(), absorbance);
+    const updated = await saveCalibrationPoint(blueScore, ppm, label.trim(), a);
     setPoints(updated);
-    setBlueScore('');
+    setAbsorbanceIn('');
     setHardnessPPM('');
     setLabel('');
   };
@@ -95,7 +95,7 @@ export default function CalibrationScreen({ route, navigation }) {
       <View style={styles.infoCard}>
         <Text style={styles.infoTitle}>How Calibration Works</Text>
         <Text style={styles.infoText}>
-          Measure known-hardness samples through the app and tap “Calibrate” on the result to pre-fill a point. When every point was captured with the diffuser reference, the app calibrates on absorbance (log₁₀ I_bg / I_water), which is immune to auto-exposure drift. Points typed in by hand use raw blue score instead. Add 2+ points to enable ppm.
+          Measure known-hardness samples through the app and tap “Calibrate” on the result — the absorbance A = log₁₀(I_ref / I_water) is pre-filled. Enter the known ppm and save. Absorbance is immune to auto-exposure drift, so the curve holds across sessions and phones. Add 2+ points to enable ppm readings (piecewise-linear).
         </Text>
       </View>
 
@@ -103,13 +103,13 @@ export default function CalibrationScreen({ route, navigation }) {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Add Calibration Point</Text>
 
-        <Text style={styles.fieldLabel}>Blue Score (0–255)</Text>
+        <Text style={styles.fieldLabel}>Absorbance A_blue (typically 0–1.5)</Text>
         <TextInput
           style={styles.input}
-          value={blueScore}
-          onChangeText={setBlueScore}
+          value={absorbanceIn}
+          onChangeText={setAbsorbanceIn}
           keyboardType="numeric"
-          placeholder="e.g. 142"
+          placeholder="e.g. 0.412"
           placeholderTextColor="#90A4AE"
         />
 
