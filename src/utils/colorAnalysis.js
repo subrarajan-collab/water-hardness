@@ -64,6 +64,30 @@ export async function analyzeImageColors(uri, opts = {}) {
   };
 }
 
+// Decodes a JPEG strip and returns the per-column mean blue value.
+// Used by the panel-setup auto-placement to find where the lit panel is
+// bright and flat across the frame width.
+export async function analyzeColumnProfile(uri) {
+  const base64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  const { data, width, height } = jpeg.decode(bytes, { useTArray: true });
+
+  const cols = new Array(width).fill(0);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      cols[x] += data[(y * width + x) * 4 + 2]; // blue channel
+    }
+  }
+  for (let x = 0; x < width; x++) cols[x] = cols[x] / height;
+  return { columns: cols, width, height };
+}
+
 // Combines a water-region analysis with one or two background (bare diffuser)
 // reference analyses into a single per-frame result carrying exposure-immune
 // per-channel absorbance.

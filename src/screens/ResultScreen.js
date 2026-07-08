@@ -4,8 +4,13 @@ import {
   TouchableOpacity, Image, ActivityIndicator, Alert,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
-import { analyzeImageColors, computeHardness, getHardnessLabel } from '../utils/colorAnalysis';
+import { analyzeImageColors, getHardnessLabel } from '../utils/colorAnalysis';
 import { loadCalibrationPoints, saveTestResult } from '../utils/calibration';
+import {
+  loadDeviceCal, computeHardnessDeviceAware, masterCurveHash, getDeviceModel,
+} from '../utils/deviceCalibration';
+
+const APP_VERSION = require('../../package.json').version;
 
 // Camera output lives in the app cache, which Android may clear at any time.
 // Copy the preview into the persistent document directory before saving history.
@@ -25,7 +30,7 @@ async function persistImage(uri) {
 export default function ResultScreen({ route, navigation }) {
   // New averaged-video path: { analysisData, sampleUri, frameCount }
   // Old single-frame path:    { croppedUri, originalUri }
-  const { analysisData, sampleUri, frameCount, croppedUri, originalUri } = route.params;
+  const { analysisData, sampleUri, frameCount, croppedUri, originalUri, captureFor } = route.params;
 
   const [result, setResult]           = useState(null);
   const [hardnessPPM, setHardnessPPM] = useState(null);
@@ -34,6 +39,9 @@ export default function ResultScreen({ route, navigation }) {
   const [error, setError]             = useState(null);
   const [saved, setSaved]             = useState(false);
   const [ppmSource, setPpmSource]     = useState(null); // 'absorbance' | 'blue' | null
+  const [deviceCal, setDeviceCal]     = useState(null);
+  const [deviceCalibrated, setDeviceCalibrated] = useState(false);
+  const [masterHash, setMasterHash]   = useState(null);
 
   // Determine which image to display as the analysed-region preview
   const previewUri = sampleUri ?? croppedUri ?? null;
@@ -57,7 +65,16 @@ export default function ResultScreen({ route, navigation }) {
       }
 
       const calPoints = await loadCalibrationPoints();
-      const ppm = computeHardness(data, calPoints);
+      const dCal = await loadDeviceCal();
+      setDeviceCal(dCal);
+      setMasterHash(masterCurveHash(calPoints));
+
+      // Device-aware pipeline: invert A_device = m·A_master + c, then look up
+      // ppm on the master curve. Falls back to the master curve directly.
+      const res = computeHardnessDeviceAware(data, calPoints, dCal);
+      const ppm = res?.ppm ?? null;
+      setDeviceCalibrated(res?.deviceCalibrated ?? false);
+
       const lbl = getHardnessLabel(data.blueDominance);
       // Detect whether ppm came from the exposure-immune absorbance curve
       const usingAbs =
@@ -97,6 +114,12 @@ export default function ResultScreen({ route, navigation }) {
       // Raw per-frame patch + ROI values (kept frames), for offline analysis
       frames: result.frames ?? null,
       ppmSource,
+      // Traceability: which device, factor, curve and app produced this number
+      deviceModel: getDeviceModel(),
+      deviceFactor: deviceCal ? { m: deviceCal.m, c: deviceCal.c } : null,
+      deviceCalibrated,
+      masterCurveHash: masterHash,
+      appVersion: APP_VERSION,
     });
     setSaved(true);
     Alert.alert('Saved', 'Result added to history.');
@@ -122,6 +145,36 @@ export default function ResultScreen({ route, navigation }) {
 
         ) : result ? (
           <>
+            {/* ── Device-calibration flow handoff ── */}
+            {captureFor && typeof result.absorbance === 'number' && (
+              <TouchableOpacity
+                style={styles.captureForBtn}
+                onPress={() =>
+                  navigation.navigate('DeviceCalibration', {
+                    captured: { for: captureFor, absorbance: result.absorbance },
+                  })
+                }
+              >
+                <Text style={styles.captureForBtnText}>
+                  {captureFor === 'device-blank' ? `✓ Use as BLANK (A = ${result.absorbance.toFixed(3)})`
+                    : captureFor === 'device-standard' ? `✓ Use as STANDARD (A = ${result.absorbance.toFixed(3)})`
+                    : `✓ Use as VALIDATION run (A = ${result.absorbance.toFixed(3)})`}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {/* ── Per-phone calibration status ── */}
+            {hardnessPPM !== null && !deviceCalibrated && (
+              <TouchableOpacity
+                style={styles.notCalBadge}
+                onPress={() => navigation.navigate('DeviceCalibration')}
+              >
+                <Text style={styles.notCalBadgeText}>
+                  ⚠ Not calibrated for this phone — using master curve directly. Tap to calibrate.
+                </Text>
+              </TouchableOpacity>
+            )}
+
             {/* ── Averaged badge (only for multi-frame results) ── */}
             {result.frameCount > 1 && (
               <View style={styles.avgBadge}>
@@ -149,7 +202,9 @@ export default function ResultScreen({ route, navigation }) {
                     ? <>
                         <Text style={styles.ppmText}>{hardnessPPM} ppm CaCO₃</Text>
                         <Text style={styles.ppmSrc}>
-                          {ppmSource === 'absorbance' ? 'from absorbance curve ✓' : 'from raw blue (drift-prone)'}
+                          {ppmSource === 'absorbance'
+                            ? (deviceCalibrated ? 'absorbance curve + device factor ✓' : 'absorbance curve (no device factor)')
+                            : 'from raw blue (drift-prone)'}
                         </Text>
                       </>
                     : <Text style={styles.uncalText}>Add calibration points for ppm reading</Text>
@@ -342,6 +397,16 @@ const styles = StyleSheet.create({
   hardnessLabel: { fontSize: 22, fontWeight: 'bold' },
   rangeText: { color: '#78909C', fontSize: 13, marginTop: 2 },
   absPrimary: { color: '#6A1B9A', fontSize: 20, fontWeight: 'bold', marginTop: 4 },
+  captureForBtn: {
+    backgroundColor: '#6A1B9A', borderRadius: 12, padding: 14,
+    marginBottom: 14, alignItems: 'center', elevation: 3,
+  },
+  captureForBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
+  notCalBadge: {
+    backgroundColor: '#FFF3E0', borderRadius: 10, padding: 10,
+    marginBottom: 14, borderLeftWidth: 4, borderLeftColor: '#EF6C00',
+  },
+  notCalBadgeText: { color: '#E65100', fontSize: 12, fontWeight: '600' },
   ppmText: { color: '#1565C0', fontSize: 16, fontWeight: 'bold', marginTop: 4 },
   ppmSrc: { color: '#78909C', fontSize: 11, marginTop: 1 },
   uncalText: { color: '#FF8F00', fontSize: 12, marginTop: 4, fontStyle: 'italic' },

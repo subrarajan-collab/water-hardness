@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { analyzeImageColors, averageAnalysisResults, computeFrameMetrics } from '../utils/colorAnalysis';
+import { loadLayout, DEFAULT_LAYOUT } from '../utils/layoutConfig';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -25,11 +26,11 @@ const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 //   patch above the ring.
 const MODE_KEY = 'device_mode';
 
-// Bottle layout (bottle spans ~20–25% of frame width)
+// Bottle layout (bottle spans ~±8% of frame width; lit panel central ~45%).
+// Patch offset / ROI height / ROI position come from the persisted layout
+// config, adjustable in the Panel Setup screen (auto-placement + nudges).
 const WATER_W = Math.round(SCREEN_W * 0.16);   // inside the liquid silhouette
-const WATER_H = 260;
 const PATCH = 72;                               // reference square side
-const PATCH_OFFSET_X = Math.round(SCREEN_W * 0.30); // patch centres at ±30% width
 const ALIGN_WARN_FRACTION = 0.04;               // warn if L/R differ by >4%
 
 // Tube layout
@@ -39,13 +40,17 @@ const TOTAL_SECONDS = 30;
 const CAPTURE_EVERY_N_SECONDS = 2; // 1 frame every 2 s
 const WARMUP_SECONDS = 5; // discard period: auto-exposure/AWB settling + LED warm-up
 
-export default function CameraScreen({ navigation }) {
+export default function CameraScreen({ navigation, route }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [phase, setPhase] = useState('idle'); // idle | recording | processing
   const [countdown, setCountdown] = useState(TOTAL_SECONDS);
   const [framesCaptured, setFramesCaptured] = useState(0);
   const [pictureSize, setPictureSize] = useState(undefined);
   const [mode, setMode] = useState('bottle'); // 'bottle' | 'tube'
+  const [layout, setLayout] = useState({ ...DEFAULT_LAYOUT });
+
+  // Device-calibration flows pass captureFor through to the result screen
+  const captureFor = route?.params?.captureFor ?? null;
 
   const cameraRef = useRef(null);
   const framesRef = useRef([]);          // collected raw frame URIs
@@ -62,6 +67,15 @@ export default function CameraScreen({ navigation }) {
       if (m === 'tube' || m === 'bottle') setMode(m);
     }).catch(() => {});
   }, []);
+
+  // Re-read the capture layout whenever this screen regains focus,
+  // so Panel Setup changes apply immediately.
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', () => {
+      loadLayout().then(setLayout).catch(() => {});
+    });
+    return unsub;
+  }, [navigation]);
 
   const switchMode = (m) => {
     setMode(m);
@@ -93,20 +107,22 @@ export default function CameraScreen({ navigation }) {
   // until it covers SCREEN_W × SCREEN_H and the overflow is cropped equally.
   const screenRects = () => {
     if (mode === 'bottle') {
+      const patchOffsetX = Math.round(layout.patchOffsetFrac * SCREEN_W);
+      const waterCenterY = layout.waterCenterYFrac * SCREEN_H;
       return {
         water: {
           left: (SCREEN_W - WATER_W) / 2,
-          top: (SCREEN_H - WATER_H) / 2,
-          w: WATER_W, h: WATER_H,
+          top: waterCenterY - layout.waterHeight / 2,
+          w: WATER_W, h: layout.waterHeight,
         },
         bgL: {
-          left: SCREEN_W / 2 - PATCH_OFFSET_X - PATCH / 2,
-          top: SCREEN_H / 2 - PATCH / 2, // SAME height as water ROI centre
+          left: SCREEN_W / 2 - patchOffsetX - PATCH / 2,
+          top: waterCenterY - PATCH / 2, // SAME height as water ROI centre
           w: PATCH, h: PATCH,
         },
         bgR: {
-          left: SCREEN_W / 2 + PATCH_OFFSET_X - PATCH / 2,
-          top: SCREEN_H / 2 - PATCH / 2,
+          left: SCREEN_W / 2 + patchOffsetX - PATCH / 2,
+          top: waterCenterY - PATCH / 2,
           w: PATCH, h: PATCH,
         },
       };
@@ -324,6 +340,7 @@ export default function CameraScreen({ navigation }) {
         sampleUri: sampleUri ?? uris[0],
         frameCount: analysisResults.length,
         deviceMode: mode,
+        captureFor,
       });
     } catch (err) {
       Alert.alert('Processing error', err.message || 'Failed to analyse frames.');
@@ -469,7 +486,7 @@ export default function CameraScreen({ navigation }) {
           <View style={styles.bottomBar}>
             {phase === 'idle' ? (
               <>
-                {/* Device mode toggle */}
+                {/* Device mode toggle + panel setup */}
                 <View style={styles.modeRow}>
                   {[['bottle', '🍼 Bottle (side)'], ['tube', '🧪 Tube (top)']].map(([m, lbl]) => (
                     <TouchableOpacity
@@ -482,7 +499,23 @@ export default function CameraScreen({ navigation }) {
                       </Text>
                     </TouchableOpacity>
                   ))}
+                  {mode === 'bottle' && (
+                    <TouchableOpacity
+                      style={styles.modeBtn}
+                      onPress={() => navigation.navigate('PanelSetup')}
+                    >
+                      <Text style={styles.modeBtnText}>🎛 Setup</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
+
+                {captureFor && (
+                  <Text style={styles.captureForBanner}>
+                    {captureFor === 'device-blank' ? '🧪 Device calibration — measuring the reagent BLANK'
+                      : captureFor === 'device-standard' ? '🧪 Device calibration — measuring the STANDARD'
+                      : '🧪 Device calibration — validation run'}
+                  </Text>
+                )}
 
                 <Text style={styles.hint}>
                   {mode === 'bottle'
@@ -620,6 +653,10 @@ const styles = StyleSheet.create({
   subHint: { color: 'rgba(255,255,255,0.5)', fontSize: 11, marginTop: 10, textAlign: 'center' },
 
   modeRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  captureForBanner: {
+    color: '#FFEB3B', fontSize: 12, fontWeight: '700', textAlign: 'center',
+    marginBottom: 10, textShadowColor: '#000', textShadowRadius: 4,
+  },
   modeBtn: {
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)',
     borderRadius: 20, paddingVertical: 8, paddingHorizontal: 16,

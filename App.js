@@ -8,6 +8,9 @@ import ROIScreen from './src/screens/ROIScreen';
 import ResultScreen from './src/screens/ResultScreen';
 import CalibrationScreen from './src/screens/CalibrationScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
+import PanelSetupScreen from './src/screens/PanelSetupScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
+import DeviceCalibrationScreen from './src/screens/DeviceCalibrationScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -52,6 +55,21 @@ export default function App() {
           name="History"
           component={HistoryScreen}
           options={{ title: 'Test History' }}
+        />
+        <Stack.Screen
+          name="PanelSetup"
+          component={PanelSetupScreen}
+          options={{ title: 'Panel Setup', headerShown: false }}
+        />
+        <Stack.Screen
+          name="Settings"
+          component={SettingsScreen}
+          options={{ title: 'Settings' }}
+        />
+        <Stack.Screen
+          name="DeviceCalibration"
+          component={DeviceCalibrationScreen}
+          options={{ title: 'Calibrate This Phone' }}
         />
       </Stack.Navigator>
     </NavigationContainer>
