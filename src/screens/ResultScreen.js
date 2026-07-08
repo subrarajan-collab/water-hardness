@@ -113,6 +113,7 @@ export default function ResultScreen({ route, navigation }) {
       refMismatch: result.refMismatch ?? null,
       // Raw per-frame patch + ROI values (kept frames), for offline analysis
       frames: result.frames ?? null,
+      method: result.method ?? null, // 'flatfield' | 'single'
       ppmSource,
       // Traceability: which device, factor, curve and app produced this number
       deviceModel: getDeviceModel(),
@@ -179,7 +180,8 @@ export default function ResultScreen({ route, navigation }) {
             {result.frameCount > 1 && (
               <View style={styles.avgBadge}>
                 <Text style={styles.avgBadgeText}>
-                  📊 Averaged over {result.frameCount} frames
+                  📊 {result.method === 'flatfield' ? 'Flat-field · ' : result.method === 'single' ? 'Single-shot · ' : ''}
+                  Averaged over {result.frameCount} frames
                   {result.rejectedFrames > 0 ? ` (${result.rejectedFrames} outlier${result.rejectedFrames > 1 ? 's' : ''} rejected)` : ''}
                   {result.blueScoreStdDev !== undefined
                     ? `  ·  σ = ${result.blueScoreStdDev}`
@@ -253,17 +255,23 @@ export default function ResultScreen({ route, navigation }) {
                     <Text style={styles.metricName}>Reference Blue · Water Blue</Text>
                     <Text style={styles.metricValue}>{result.bgBlue} · {result.blueScore}</Text>
                   </View>
-                  {typeof result.refMismatch === 'number' && (
-                    <View style={styles.metricRow}>
-                      <Text style={styles.metricName}>L/R patch mismatch</Text>
-                      <Text style={[styles.metricValue, {
-                        color: result.refMismatch <= 0.04 ? '#2E7D32' : '#C62828',
-                      }]}>
-                        {(result.refMismatch * 100).toFixed(1)}%
-                        {result.refMismatch <= 0.04 ? ' ✓' : ' ⚠'}
-                      </Text>
-                    </View>
-                  )}
+                  {typeof result.refMismatch === 'number' && (() => {
+                    const isFF = result.method === 'flatfield';
+                    const limit = isFF ? 0.03 : 0.04;
+                    return (
+                      <View style={styles.metricRow}>
+                        <Text style={styles.metricName}>
+                          {isFF ? 'Exposure bridge L/R agreement' : 'L/R patch mismatch'}
+                        </Text>
+                        <Text style={[styles.metricValue, {
+                          color: result.refMismatch <= limit ? '#2E7D32' : '#C62828',
+                        }]}>
+                          {(result.refMismatch * 100).toFixed(1)}%
+                          {result.refMismatch <= limit ? ' ✓' : ' ⚠'}
+                        </Text>
+                      </View>
+                    );
+                  })()}
                   {typeof result.absorbanceStdDev === 'number' && (
                     <Text style={styles.absNote}>
                       Absorbance σ = {result.absorbanceStdDev.toFixed(3)} across frames — immune to auto-exposure drift.

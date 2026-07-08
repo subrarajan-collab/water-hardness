@@ -12,8 +12,15 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { analyzeImageColors, averageAnalysisResults, computeFrameMetrics } from '../utils/colorAnalysis';
+import {
+  analyzeImageColors, averageAnalysisResults, computeFrameMetrics,
+  computeFrameMetricsFlatField,
+} from '../utils/colorAnalysis';
 import { loadLayout, DEFAULT_LAYOUT } from '../utils/layoutConfig';
+import {
+  saveBackground, loadBackground, backgroundStatus, layoutKeyOf,
+  medianRegion, BRIDGE_WARN_FRACTION,
+} from '../utils/flatField';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -31,7 +38,9 @@ const MODE_KEY = 'device_mode';
 // config, adjustable in the Panel Setup screen (auto-placement + nudges).
 const WATER_W = Math.round(SCREEN_W * 0.16);   // inside the liquid silhouette
 const PATCH = 72;                               // reference square side
-const ALIGN_WARN_FRACTION = 0.04;               // warn if L/R differ by >4%
+const ALIGN_WARN_FRACTION = 0.04;               // single-shot mode: L/R differ by >4%
+const SATURATION_LIMIT = 0.01;                  // >1% clipped ROI pixels → abort
+const BG_CAPTURE_FRAMES = 5;                    // frames for the flat-field background
 
 // Tube layout
 const GUIDE_D = 220;
@@ -48,6 +57,8 @@ export default function CameraScreen({ navigation, route }) {
   const [pictureSize, setPictureSize] = useState(undefined);
   const [mode, setMode] = useState('bottle'); // 'bottle' | 'tube'
   const [layout, setLayout] = useState({ ...DEFAULT_LAYOUT });
+  const [background, setBackground] = useState(null); // flat-field background
+  const flatFieldRef = useRef(null); // background used for the current run (null = single-shot)
 
   // Device-calibration flows pass captureFor through to the result screen
   const captureFor = route?.params?.captureFor ?? null;
@@ -73,6 +84,7 @@ export default function CameraScreen({ navigation, route }) {
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => {
       loadLayout().then(setLayout).catch(() => {});
+      loadBackground().then(setBackground).catch(() => {});
     });
     return unsub;
   }, [navigation]);
@@ -224,12 +236,122 @@ export default function CameraScreen({ navigation, route }) {
     return true;
   };
 
+  // ─── Flat-field background capture (panel on, NO bottle) ──────────────────
+  const captureBackground = async () => {
+    setPhase('processing');
+    try {
+      const roiFrames = [], patchLFrames = [], patchRFrames = [];
+      let rects = null;
+      for (let i = 0; i < BG_CAPTURE_FRAMES; i++) {
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 0.7, base64: false, skipProcessing: true,
+        });
+        if (!rects) {
+          const probe = await ImageManipulator.manipulateAsync(photo.uri, [], {});
+          rects = toPhotoRects(probe.width, probe.height);
+        }
+        const f = await analyzeFrame(photo.uri, rects);
+        if (i === 0 && f.water.b < 20) {
+          Alert.alert(
+            'Panel dark',
+            'The water ROI shows no lit panel. Turn the LED on and remove the bottle, then capture again.'
+          );
+          setPhase('idle');
+          return;
+        }
+        if (i === 0 && f.water.satFraction > SATURATION_LIMIT) {
+          Alert.alert('Sensor clipping', 'Reduce LED brightness — sensor clipping in the background shot.');
+          setPhase('idle');
+          return;
+        }
+        roiFrames.push(f.water);
+        patchLFrames.push(f.bgL);
+        patchRFrames.push(f.bgR);
+      }
+      const bg = await saveBackground({
+        roi: medianRegion(roiFrames),
+        patchL: medianRegion(patchLFrames),
+        patchR: medianRegion(patchRFrames),
+        layoutKey: layoutKeyOf(layout),
+      });
+      setBackground(bg);
+      Alert.alert(
+        'Background captured ✓',
+        `Median of ${BG_CAPTURE_FRAMES} frames stored.\nROI blue ${bg.roi.b.toFixed(0)} · patches ${bg.patchL.b.toFixed(0)}/${bg.patchR.b.toFixed(0)}.\n\nNow place the bottle and measure.`
+      );
+    } catch (e) {
+      Alert.alert('Background capture failed', e.message || 'Try again.');
+    } finally {
+      setPhase('idle');
+    }
+  };
+
+  // Flat-field pre-capture probe: L and R must agree about the exposure bridge
+  // between the background shot and now (disagreement = the phone moved).
+  const flatFieldProbe = async (bg) => {
+    const photo = await cameraRef.current.takePictureAsync({
+      quality: 0.7, base64: false, skipProcessing: true,
+    });
+    const probe = await ImageManipulator.manipulateAsync(photo.uri, [], {});
+    const rects = toPhotoRects(probe.width, probe.height);
+    const f = await analyzeFrame(photo.uri, rects);
+    if (f.bgL.b < 20 || (f.bgR && f.bgR.b < 20)) {
+      Alert.alert('Reference patch dark', 'Both dashed squares must sit on bare lit panel. Reposition and try again.');
+      return false;
+    }
+    const ratioL = bg.patchL.b > 0 ? f.bgL.b / bg.patchL.b : null;
+    const ratioR = bg.patchR.b > 0 && f.bgR ? f.bgR.b / bg.patchR.b : null;
+    if (ratioL !== null && ratioR !== null) {
+      const mean = (ratioL + ratioR) / 2;
+      const mismatch = mean > 0 ? Math.abs(ratioL - ratioR) / mean : 0;
+      if (mismatch > BRIDGE_WARN_FRACTION) {
+        const pct = (mismatch * 100).toFixed(1);
+        return new Promise((resolve) => {
+          Alert.alert(
+            'Phone moved since background',
+            `Left and right patches disagree about the exposure bridge by ${pct}% ` +
+            `(limit ${BRIDGE_WARN_FRACTION * 100}%). The phone or panel moved since the ` +
+            'background capture. Re-capture the background for best accuracy.',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Measure anyway', onPress: () => resolve(true) },
+            ]
+          );
+        });
+      }
+    }
+    return true;
+  };
+
   // ─── Start 30-second recording ───────────────────────────────────────────
   const startRecording = async () => {
+    flatFieldRef.current = null;
+
     if (mode === 'bottle') {
+      // Decide flat-field vs single-shot from background freshness
+      const status = backgroundStatus(background, layout);
+      if (status.usable) {
+        flatFieldRef.current = background;
+      } else if (background && (status.reason === 'stale' || status.reason === 'layout-changed')) {
+        const msg = status.reason === 'stale'
+          ? `The stored background is ${status.ageMinutes} min old (limit 30).`
+          : 'The capture layout changed since the background was stored.';
+        const choice = await new Promise((resolve) => {
+          Alert.alert('Background out of date', `${msg} Re-capture it (remove the bottle) for best accuracy.`, [
+            { text: 'Use anyway', onPress: () => resolve('use') },
+            { text: 'Single-shot mode', onPress: () => resolve('single') },
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve('cancel') },
+          ]);
+        });
+        if (choice === 'cancel') return;
+        if (choice === 'use') flatFieldRef.current = background;
+      }
+
       setPhase('processing'); // brief spinner during the probe shot
       try {
-        const ok = await alignmentProbe();
+        const ok = flatFieldRef.current
+          ? await flatFieldProbe(flatFieldRef.current)
+          : await alignmentProbe();
         if (!ok) { setPhase('idle'); return; }
       } catch (_) {
         // probe failure is not fatal — proceed to the run
@@ -303,10 +425,22 @@ export default function CameraScreen({ navigation, route }) {
       const analysisResults = [];
       let sampleUri = null;
 
+      const ffBg = flatFieldRef.current;
+
       for (let i = 0; i < uris.length; i++) {
         const f = await analyzeFrame(uris[i], rects);
 
         if (i === Math.floor(uris.length / 2)) sampleUri = f.previewUri;
+
+        // Saturation gate — clipped pixels destroy the ratio math
+        if (f.water.satFraction > SATURATION_LIMIT) {
+          Alert.alert(
+            'Sensor clipping',
+            `Reduce LED brightness — ${(f.water.satFraction * 100).toFixed(1)}% of ROI pixels are saturated (≥250).`
+          );
+          setPhase('idle');
+          return;
+        }
 
         // Gates on the first frame
         if (i === 0) {
@@ -330,10 +464,16 @@ export default function CameraScreen({ navigation, route }) {
           }
         }
 
-        analysisResults.push(f.metrics);
+        // Flat-field metrics when a fresh background exists, else single-shot
+        analysisResults.push(
+          ffBg
+            ? computeFrameMetricsFlatField(f.water, f.bgL, f.bgR, ffBg)
+            : f.metrics
+        );
       }
 
       const averaged = averageAnalysisResults(analysisResults);
+      if (averaged) averaged.method = ffBg ? 'flatfield' : 'single';
 
       navigation.navigate('Result', {
         analysisData: averaged,
@@ -509,6 +649,27 @@ export default function CameraScreen({ navigation, route }) {
                   )}
                 </View>
 
+                {/* Flat-field background status + capture */}
+                {mode === 'bottle' && (() => {
+                  const st = backgroundStatus(background, layout);
+                  return (
+                    <View style={styles.bgRow}>
+                      <Text style={styles.bgStatusText}>
+                        {st.usable
+                          ? `Background ✓ ${st.ageMinutes} min old (flat-field)`
+                          : st.reason === 'none'
+                            ? 'No background — single-shot mode'
+                            : st.reason === 'stale'
+                              ? `Background ${st.ageMinutes} min old — re-capture`
+                              : 'Layout changed — re-capture background'}
+                      </Text>
+                      <TouchableOpacity style={styles.bgBtn} onPress={captureBackground}>
+                        <Text style={styles.bgBtnText}>◙ Capture background (no bottle)</Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })()}
+
                 {captureFor && (
                   <Text style={styles.captureForBanner}>
                     {captureFor === 'device-blank' ? '🧪 Device calibration — measuring the reagent BLANK'
@@ -653,6 +814,16 @@ const styles = StyleSheet.create({
   subHint: { color: 'rgba(255,255,255,0.5)', fontSize: 11, marginTop: 10, textAlign: 'center' },
 
   modeRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  bgRow: { alignItems: 'center', marginBottom: 12 },
+  bgStatusText: {
+    color: 'rgba(255,255,255,0.85)', fontSize: 11, marginBottom: 6,
+    textShadowColor: '#000', textShadowRadius: 4,
+  },
+  bgBtn: {
+    borderWidth: 1, borderColor: '#FFEB3B', borderRadius: 18,
+    paddingVertical: 7, paddingHorizontal: 14, backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  bgBtnText: { color: '#FFEB3B', fontSize: 12, fontWeight: '600' },
   captureForBanner: {
     color: '#FFEB3B', fontSize: 12, fontWeight: '700', textAlign: 'center',
     marginBottom: 10, textShadowColor: '#000', textShadowRadius: 4,

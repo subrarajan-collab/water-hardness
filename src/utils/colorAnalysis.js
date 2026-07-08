@@ -20,6 +20,7 @@ export async function analyzeImageColors(uri, opts = {}) {
 
   let r = 0, g = 0, b = 0;
   let count = 0;
+  let saturated = 0; // pixels with any channel at/above clipping (≥250)
 
   if (opts.circular) {
     const cx = (width - 1) / 2;
@@ -35,6 +36,7 @@ export async function analyzeImageColors(uri, opts = {}) {
         r += data[i];
         g += data[i + 1];
         b += data[i + 2];
+        if (data[i] >= 250 || data[i + 1] >= 250 || data[i + 2] >= 250) saturated++;
         count++;
       }
     }
@@ -44,10 +46,12 @@ export async function analyzeImageColors(uri, opts = {}) {
       r += data[i];
       g += data[i + 1];
       b += data[i + 2];
+      if (data[i] >= 250 || data[i + 1] >= 250 || data[i + 2] >= 250) saturated++;
       // data[i+3] is alpha — always 255 for JPEG, skip
     }
   }
   if (count === 0) count = 1;
+  const satFraction = saturated / count;
 
   const avgR = Math.round(r / count);
   const avgG = Math.round(g / count);
@@ -61,6 +65,7 @@ export async function analyzeImageColors(uri, opts = {}) {
     blueScore: avgB,
     blueDominance: total > 0 ? parseFloat(((avgB / total) * 100).toFixed(1)) : 0,
     pixelCount: count,
+    satFraction: parseFloat(satFraction.toFixed(4)),
   };
 }
 
@@ -135,6 +140,67 @@ export function computeFrameMetrics(water, bgLeft, bgRight = null) {
     absorbanceG: absCh(ref.g, water.g),
     transmittance:
       ref.b > 0 && water.b > 0 ? parseFloat((water.b / ref.b).toFixed(4)) : null,
+  };
+}
+
+// Flat-field frame metrics. `background` is the stored no-bottle capture:
+// { roi: {r,g,b}, patchL: {r,g,b}, patchR: {r,g,b} }.
+//
+// Per channel:  A_ch = log10[ (ROI_bg / Patch_bg) ÷ (ROI_meas / Patch_meas) ]
+// where Patch = average of L+R in each shot. The patches bridge auto-exposure
+// between the background shot and the measurement shot, so the panel's
+// non-uniformity BEHIND the bottle cancels exactly — the ROI is compared to
+// its own pixels in the background capture, not to the side patches.
+export function computeFrameMetricsFlatField(water, bgLeft, bgRight, background) {
+  const patchMeas = {
+    r: (bgLeft.r + bgRight.r) / 2,
+    g: (bgLeft.g + bgRight.g) / 2,
+    b: (bgLeft.b + bgRight.b) / 2,
+  };
+  const patchBg = {
+    r: (background.patchL.r + background.patchR.r) / 2,
+    g: (background.patchL.g + background.patchR.g) / 2,
+    b: (background.patchL.b + background.patchR.b) / 2,
+  };
+
+  const absCh = (ch) => {
+    const roiBg = background.roi[ch], pBg = patchBg[ch];
+    const roiM = water[ch], pM = patchMeas[ch];
+    if (roiBg > 0 && pBg > 0 && roiM > 0 && pM > 0) {
+      return parseFloat(Math.log10((roiBg / pBg) / (roiM / pM)).toFixed(4));
+    }
+    return null;
+  };
+
+  // Exposure-bridge consistency: L and R must agree about how the exposure
+  // changed between the two shots. Disagreement = the phone moved.
+  let bridgeMismatch = null;
+  if (background.patchL.b > 0 && background.patchR.b > 0 && bgLeft.b > 0 && bgRight.b > 0) {
+    const ratioL = bgLeft.b / background.patchL.b;
+    const ratioR = bgRight.b / background.patchR.b;
+    const mean = (ratioL + ratioR) / 2;
+    bridgeMismatch = mean > 0 ? parseFloat((Math.abs(ratioL - ratioR) / mean).toFixed(4)) : null;
+  }
+
+  const tBlue =
+    background.roi.b > 0 && patchBg.b > 0 && water.b > 0 && patchMeas.b > 0
+      ? (water.b / patchMeas.b) / (background.roi.b / patchBg.b)
+      : null;
+
+  return {
+    r: water.r, g: water.g, b: water.b,
+    blueScore: water.blueScore,
+    blueDominance: water.blueDominance,
+    pixelCount: water.pixelCount,
+    bgL: { r: bgLeft.r, g: bgLeft.g, b: bgLeft.b },
+    bgRt: { r: bgRight.r, g: bgRight.g, b: bgRight.b },
+    bgBlue: Math.round(patchMeas.b),
+    // bridge consistency replaces the raw L≈R requirement in flat-field mode
+    refMismatch: bridgeMismatch,
+    absorbance: absCh('b'),
+    absorbanceR: absCh('r'),
+    absorbanceG: absCh('g'),
+    transmittance: tBlue !== null ? parseFloat(tBlue.toFixed(4)) : null,
   };
 }
 
