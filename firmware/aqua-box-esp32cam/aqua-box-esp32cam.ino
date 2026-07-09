@@ -49,7 +49,7 @@ static void startWifi() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("\nAQUA-BOX " FW_VERSION);
+  Serial.printf("\nAQUA-BOX fw=%s api_version=%d\n", FW_VERSION, API_VERSION);
 
   ledInit();          // LED pin LOW at boot, before anything else
   configLoad();

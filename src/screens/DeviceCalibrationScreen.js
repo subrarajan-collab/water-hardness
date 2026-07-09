@@ -9,7 +9,7 @@ import {
   computeHardnessDeviceAware, VALIDATION_TOLERANCE, getDeviceModel,
   phoneDeviceKey,
 } from '../utils/deviceCalibration';
-import { postMeasure } from '../utils/wifiDevice';
+import { postMeasure } from '../api/boxClient';
 
 const PROGRESS_KEY_BASE = 'device_cal_progress_v1';
 
@@ -150,11 +150,16 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
       setBusy(true);
       try {
         const m = await postMeasure(boxIp);
-        if (m.ok === false) { Alert.alert('Measurement error', m.error || 'Box returned an error.'); return; }
         if (typeof m.A_blue !== 'number') { Alert.alert('No reading', 'Box did not return A_blue.'); return; }
         await handleCaptured({ for: what, absorbance: m.A_blue });
       } catch (e) {
-        Alert.alert('Box unreachable', e.message || 'Could not run the measurement.');
+        // e.kind: 'network' (unreachable), 'http' (firmware/app mismatch),
+        // 'gate' (box rejected — clipping, no blank, etc.), 'cancelled'.
+        const title = e.kind === 'gate' ? 'Measurement rejected'
+          : e.kind === 'http' ? 'Firmware mismatch'
+          : e.kind === 'cancelled' ? 'Cancelled'
+          : 'Box unreachable';
+        Alert.alert(title, e.message || 'Could not run the measurement.');
       } finally {
         setBusy(false);
       }

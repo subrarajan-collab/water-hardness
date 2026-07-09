@@ -2,9 +2,16 @@
 #include <Arduino.h>
 
 // ─── Firmware identity ───────────────────────────────────────────────────────
-#define FW_VERSION "1.0.0"
+#define FW_VERSION "1.1.0"
 #define DEVICE_TYPE "esp32cam"
 #define AP_SSID     "AQUA-BOX"
+
+// Bump whenever the HTTP API's request/response SHAPE changes (new required
+// field, changed meaning of a value, endpoint added/removed). The app checks
+// this against its own expected value on /ping and warns on mismatch — this
+// is what actually catches "box is running stale firmware" instead of the
+// symptom (a 404) with no explanation.
+#define API_VERSION 1
 
 // ─── AI-Thinker ESP32-CAM pin map ────────────────────────────────────────────
 #define PWDN_GPIO_NUM   32

@@ -2,11 +2,18 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert, ActivityIndicator,
 } from 'react-native';
-import { getStatus, postBlank, postMeasure, measureToAnalysis } from '../utils/wifiDevice';
+import { getStatus, postBlank, postMeasure, measureToAnalysis } from '../api/boxClient';
 import { loadCalibrationPoints } from '../utils/calibration';
 import {
   loadDeviceCal, computeHardnessDeviceAware, boxDeviceKey,
 } from '../utils/deviceCalibration';
+
+function alertTitleFor(e) {
+  return e.kind === 'gate' ? 'Measurement rejected'
+    : e.kind === 'http' ? 'Firmware mismatch'
+    : e.kind === 'cancelled' ? 'Cancelled'
+    : 'Box unreachable';
+}
 
 function ageText(s) {
   if (s === null || s === undefined || s < 0) return 'unknown — recapture';
@@ -19,6 +26,7 @@ function ageText(s) {
 export default function DeviceHomeScreen({ route, navigation }) {
   const ip = route.params.ip;
   const [status, setStatus] = useState(route.params.status || null);
+  const [statusError, setStatusError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState('');
 
@@ -26,11 +34,20 @@ export default function DeviceHomeScreen({ route, navigation }) {
   const deviceKey = boxId ? boxDeviceKey(boxId) : null;
   const hasPreview = !!status?.capabilities?.preview;
 
+  // A refresh failure must NOT wipe out already-good status — that would
+  // silently regress the card to placeholder dashes with no visible cause.
   const refresh = useCallback(async () => {
-    try { setStatus(await getStatus(ip)); } catch {}
+    try {
+      const s = await getStatus(ip);
+      setStatus(s);
+      setStatusError(null);
+    } catch (e) {
+      setStatusError(e.message || 'Status refresh failed');
+    }
   }, [ip]);
 
   useEffect(() => {
+    refresh(); // don't rely solely on the 'focus' event timing
     const unsub = navigation.addListener('focus', refresh);
     return unsub;
   }, [navigation, refresh]);
@@ -39,11 +56,10 @@ export default function DeviceHomeScreen({ route, navigation }) {
     setBusy(true); setBusyLabel('Capturing blank (~25 s)…');
     try {
       const r = await postBlank(ip);
-      if (r.ok === false) Alert.alert('Blank failed', r.error || 'Box returned an error.');
-      else Alert.alert('Blank captured ✓', `ROI net blue ${r.roi_net?.b?.toFixed?.(1) ?? '—'}. Now measure a sample.`);
+      Alert.alert('Blank captured ✓', `ROI net blue ${r.roi_net?.b?.toFixed?.(1) ?? '—'}. Now measure a sample.`);
       await refresh();
     } catch (e) {
-      Alert.alert('Box unreachable', e.message || 'Measurement failed.');
+      Alert.alert(alertTitleFor(e), e.message || 'Measurement failed.');
     } finally { setBusy(false); }
   };
 
@@ -51,10 +67,6 @@ export default function DeviceHomeScreen({ route, navigation }) {
     setBusy(true); setBusyLabel('Measuring (~25 s)…');
     try {
       const m = await postMeasure(ip);
-      if (m.ok === false) {
-        Alert.alert('Measurement error', m.error || 'Box returned an error.');
-        return;
-      }
       const analysis = measureToAnalysis(m);
       const calPoints = await loadCalibrationPoints();
       const dCal = deviceKey ? await loadDeviceCal(deviceKey) : null;
@@ -69,7 +81,7 @@ export default function DeviceHomeScreen({ route, navigation }) {
         preloadedMaster: calPoints,
       });
     } catch (e) {
-      Alert.alert('Box unreachable', e.message || 'Measurement failed.');
+      Alert.alert(alertTitleFor(e), e.message || 'Measurement failed.');
     } finally { setBusy(false); }
   };
 
@@ -91,6 +103,9 @@ export default function DeviceHomeScreen({ route, navigation }) {
           fw {status?.fw_version || '—'} · uptime {status?.uptime ?? '—'}s{'\n'}
           blank: {ageText(status?.blank_age_s)}
         </Text>
+        {statusError && (
+          <Text style={styles.statusErrText}>⚠ {statusError}</Text>
+        )}
       </View>
 
       <TouchableOpacity style={styles.measureBtn} onPress={measure}>
@@ -140,6 +155,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: '#FFF', borderRadius: 16, padding: 18, marginBottom: 16, elevation: 2 },
   cardTitle: { fontSize: 15, fontWeight: 'bold', color: '#1565C0', marginBottom: 8 },
   metaText: { color: '#546E7A', fontSize: 13, lineHeight: 19 },
+  statusErrText: { color: '#C62828', fontSize: 12, marginTop: 8, fontWeight: '600' },
 
   measureBtn: { backgroundColor: '#1565C0', borderRadius: 16, paddingVertical: 18, alignItems: 'center', marginBottom: 12, elevation: 3 },
   measureBtnText: { color: '#FFF', fontSize: 17, fontWeight: 'bold' },

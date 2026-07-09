@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Image, PanResponder, Alert, ActivityIndicator,
 } from 'react-native';
-import { thumbUrl, postConfig, getStatus } from '../utils/wifiDevice';
+import { thumbUrl, postConfig, getStatus } from '../api/boxClient';
 
 // 4:3 preview (QVGA). Overlays use normalized 0..1 coords mapped to this box.
 const PREVIEW_W = 320;

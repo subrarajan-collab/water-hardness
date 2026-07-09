@@ -23,9 +23,19 @@ static String rectJson(const RectN& r) {
          ",\"w\":" + String(r.w,4) + ",\"h\":" + String(r.h,4) + "}";
 }
 
+// ─── GET /ping ────────────────────────────────────────────────────────────────
+// Cheap, dependency-free reachability + API-shape check. The app calls this
+// on Connect, before /status, specifically so a stale-firmware mismatch shows
+// as "firmware API v0 vs app expects v1" instead of an unexplained 404 on
+// some other route.
+static esp_err_t hPing(httpd_req_t* req) {
+  return sendJson(req, "{\"ok\":true,\"api_version\":" + String(API_VERSION) + "}");
+}
+
 // ─── GET /status ─────────────────────────────────────────────────────────────
 static esp_err_t hStatus(httpd_req_t* req) {
   String j = "{\"device_type\":\"" DEVICE_TYPE "\",\"fw_version\":\"" FW_VERSION "\",";
+  j += "\"api_version\":" + String(API_VERSION) + ",";
   j += "\"box_id\":\"" + g_boxId + "\",";
   j += "\"capabilities\":{\"preview\":true},";
   j += "\"settings\":{";
@@ -138,16 +148,30 @@ static esp_err_t hOptions(httpd_req_t* req) {
 
 void startWebServer() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-  cfg.max_uri_handlers = 12;
+  // Comfortable headroom above the 11 routes below (ESP-IDF's own default is
+  // only 8 and silently drops anything past it — always set this explicitly).
+  cfg.max_uri_handlers = 20;
   cfg.recv_wait_timeout = 30;   // seconds — measure body is short but sequence is long
   cfg.send_wait_timeout = 30;
   cfg.lru_purge_enable = true;
-  if (httpd_start(&s_server, &cfg) != ESP_OK) return;
 
+  esp_err_t startErr = httpd_start(&s_server, &cfg);
+  Serial.printf("httpd_start: %s (max_uri_handlers=%d)\n",
+                startErr == ESP_OK ? "OK" : "FAILED", cfg.max_uri_handlers);
+  if (startErr != ESP_OK) return;
+
+  // Log every registration's result — the fastest way to confirm over Serial
+  // that a given endpoint (e.g. POST /measure) is actually live on the box.
+  int registered = 0, failed = 0;
   auto reg = [&](const char* uri, httpd_method_t m, esp_err_t (*fn)(httpd_req_t*)) {
     httpd_uri_t u = { uri, m, fn, nullptr };
-    httpd_register_uri_handler(s_server, &u);
+    esp_err_t err = httpd_register_uri_handler(s_server, &u);
+    const char* mName = (m == HTTP_GET) ? "GET" : (m == HTTP_POST) ? "POST" : "OPTIONS";
+    Serial.printf("  route %-7s %-12s -> %s\n", mName, uri, err == ESP_OK ? "OK" : "FAILED");
+    if (err == ESP_OK) registered++; else failed++;
   };
+  Serial.println("Registering HTTP routes:");
+  reg("/ping",      HTTP_GET,  hPing);
   reg("/status",    HTTP_GET,  hStatus);
   reg("/probe",     HTTP_GET,  hProbe);
   reg("/thumb.jpg", HTTP_GET,  hThumb);
@@ -158,4 +182,5 @@ void startWebServer() {
   reg("/config",    HTTP_OPTIONS, hOptions);
   reg("/blank",     HTTP_OPTIONS, hOptions);
   reg("/measure",   HTTP_OPTIONS, hOptions);
+  Serial.printf("Routes: %d registered, %d failed\n", registered, failed);
 }

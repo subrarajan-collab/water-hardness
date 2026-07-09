@@ -3,12 +3,12 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getStatus, WIFI_DEFAULT_IP, ANDROID_FETCH_HINT } from '../utils/wifiDevice';
+import { connectAndVerify, DEFAULT_IP, EXPECTED_API_VERSION } from '../api/boxClient';
 
 const LAST_IP_KEY = 'wifi_last_ip';
 
 export default function DeviceConnectScreen({ navigation }) {
-  const [ip, setIp] = useState(WIFI_DEFAULT_IP);
+  const [ip, setIp] = useState(DEFAULT_IP);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -20,11 +20,19 @@ export default function DeviceConnectScreen({ navigation }) {
     setBusy(true);
     setError(null);
     try {
-      const status = await getStatus(ip);
+      const { status, apiVersion, apiVersionMatch } = await connectAndVerify(ip);
       await AsyncStorage.setItem(LAST_IP_KEY, ip).catch(() => {});
+      if (!apiVersionMatch) {
+        setError(
+          `Firmware API v${apiVersion} does not match this app (expects v${EXPECTED_API_VERSION}). ` +
+          'Some features may fail — update the box firmware or the app.'
+        );
+        // still proceed — the box is reachable, this is a warning not a hard stop
+      }
       navigation.navigate('DeviceHome', { ip, status });
     } catch (e) {
-      setError(ANDROID_FETCH_HINT);
+      // e.kind: 'network' (unreachable) or 'http' (box responded, wrong route)
+      setError(e.message || 'Could not connect to the box.');
     } finally {
       setBusy(false);
     }
@@ -36,7 +44,7 @@ export default function DeviceConnectScreen({ navigation }) {
         <Text style={styles.infoTitle}>📡 Connect to a measurement box</Text>
         <Text style={styles.infoText}>
           Power the AQUA-BOX, then on this phone join its WiFi network “AQUA-BOX”.
-          The box is at {WIFI_DEFAULT_IP} by default.
+          The box is at {DEFAULT_IP} by default.
         </Text>
       </View>
 
@@ -48,7 +56,7 @@ export default function DeviceConnectScreen({ navigation }) {
           onChangeText={setIp}
           keyboardType="numbers-and-punctuation"
           autoCapitalize="none"
-          placeholder={WIFI_DEFAULT_IP}
+          placeholder={DEFAULT_IP}
           placeholderTextColor="#90A4AE"
         />
         <TouchableOpacity
