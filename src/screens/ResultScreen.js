@@ -30,7 +30,10 @@ async function persistImage(uri) {
 export default function ResultScreen({ route, navigation }) {
   // New averaged-video path: { analysisData, sampleUri, frameCount }
   // Old single-frame path:    { croppedUri, originalUri }
-  const { analysisData, sampleUri, frameCount, croppedUri, originalUri, captureFor } = route.params;
+  const {
+    analysisData, sampleUri, frameCount, croppedUri, originalUri, captureFor,
+    deviceKey, boxMeta, skipDeviceLoad, preloadedDeviceCal, preloadedMaster,
+  } = route.params;
 
   const [result, setResult]           = useState(null);
   const [hardnessPPM, setHardnessPPM] = useState(null);
@@ -64,8 +67,8 @@ export default function ResultScreen({ route, navigation }) {
         data = await analyzeImageColors(croppedUri);
       }
 
-      const calPoints = await loadCalibrationPoints();
-      const dCal = await loadDeviceCal();
+      const calPoints = preloadedMaster ?? (await loadCalibrationPoints());
+      const dCal = skipDeviceLoad ? (preloadedDeviceCal ?? null) : await loadDeviceCal(deviceKey);
       setDeviceCal(dCal);
       setMasterHash(masterCurveHash(calPoints));
 
@@ -116,11 +119,19 @@ export default function ResultScreen({ route, navigation }) {
       method: result.method ?? null, // 'flatfield' | 'single'
       ppmSource,
       // Traceability: which device, factor, curve and app produced this number
-      deviceModel: getDeviceModel(),
+      deviceModel: boxMeta ? `${boxMeta.box_id}` : getDeviceModel(),
+      deviceKey: deviceKey ?? null,
+      boxId: boxMeta?.box_id ?? null,
+      fwVersion: boxMeta?.fw_version ?? null,
       deviceFactor: deviceCal ? { m: deviceCal.m, c: deviceCal.c } : null,
       deviceCalibrated,
       masterCurveHash: masterHash,
       appVersion: APP_VERSION,
+      // WiFi-box diagnostics
+      satFraction: result.satFraction ?? null,
+      darkLevel: result.darkLevel ?? null,
+      blankAgeS: result.blankAgeS ?? null,
+      deviceWarnings: result.warnings ?? null,
     });
     setSaved(true);
     Alert.alert('Saved', 'Result added to history.');
@@ -164,14 +175,30 @@ export default function ResultScreen({ route, navigation }) {
               </TouchableOpacity>
             )}
 
-            {/* ── Per-phone calibration status ── */}
+            {/* ── Device warnings from the WiFi box ── */}
+            {Array.isArray(result.warnings) && result.warnings.length > 0 && (
+              <View style={styles.warnBanner}>
+                <Text style={styles.warnBannerText}>⚠ {result.warnings.join(' · ')}</Text>
+              </View>
+            )}
+
+            {/* ── Per-device calibration status ── */}
             {hardnessPPM !== null && !deviceCalibrated && (
               <TouchableOpacity
                 style={styles.notCalBadge}
-                onPress={() => navigation.navigate('DeviceCalibration')}
+                onPress={() =>
+                  boxMeta
+                    ? navigation.navigate('DeviceCalibration', {
+                        sourceType: 'box', boxIp: boxMeta.ip, deviceKey,
+                        deviceLabel: boxMeta.box_id,
+                      })
+                    : navigation.navigate('DeviceCalibration')
+                }
               >
                 <Text style={styles.notCalBadgeText}>
-                  ⚠ Not calibrated for this phone — using master curve directly. Tap to calibrate.
+                  {boxMeta
+                    ? '⚠ This box is not calibrated — using master curve directly. Tap to calibrate.'
+                    : '⚠ Not calibrated for this phone — using master curve directly. Tap to calibrate.'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -180,7 +207,7 @@ export default function ResultScreen({ route, navigation }) {
             {result.frameCount > 1 && (
               <View style={styles.avgBadge}>
                 <Text style={styles.avgBadgeText}>
-                  📊 {result.method === 'flatfield' ? 'Flat-field · ' : result.method === 'single' ? 'Single-shot · ' : ''}
+                  📊 {result.method === 'flatfield' ? 'Flat-field · ' : result.method === 'single' ? 'Single-shot · ' : result.method === 'wifi-device' ? 'WiFi box · ' : ''}
                   Averaged over {result.frameCount} frames
                   {result.rejectedFrames > 0 ? ` (${result.rejectedFrames} outlier${result.rejectedFrames > 1 ? 's' : ''} rejected)` : ''}
                   {result.blueScoreStdDev !== undefined
@@ -415,6 +442,11 @@ const styles = StyleSheet.create({
     marginBottom: 14, borderLeftWidth: 4, borderLeftColor: '#EF6C00',
   },
   notCalBadgeText: { color: '#E65100', fontSize: 12, fontWeight: '600' },
+  warnBanner: {
+    backgroundColor: '#FFEBEE', borderRadius: 10, padding: 10,
+    marginBottom: 14, borderLeftWidth: 4, borderLeftColor: '#C62828',
+  },
+  warnBannerText: { color: '#B71C1C', fontSize: 12, fontWeight: '600' },
   ppmText: { color: '#1565C0', fontSize: 16, fontWeight: 'bold', marginTop: 4 },
   ppmSrc: { color: '#78909C', fontSize: 11, marginTop: 1 },
   uncalText: { color: '#FF8F00', fontSize: 12, marginTop: 4, fontStyle: 'italic' },

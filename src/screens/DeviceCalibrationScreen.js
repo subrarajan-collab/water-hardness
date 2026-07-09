@@ -7,9 +7,11 @@ import { loadCalibrationPoints } from '../utils/calibration';
 import {
   fitDeviceFactor, saveDeviceCal, loadDeviceCal, masterCurveHash,
   computeHardnessDeviceAware, VALIDATION_TOLERANCE, getDeviceModel,
+  phoneDeviceKey,
 } from '../utils/deviceCalibration';
+import { postMeasure } from '../utils/wifiDevice';
 
-const PROGRESS_KEY = 'device_cal_progress_v1';
+const PROGRESS_KEY_BASE = 'device_cal_progress_v1';
 
 // Guided per-phone calibration:
 //   1. measure the reagent BLANK        → A_blank
@@ -17,14 +19,22 @@ const PROGRESS_KEY = 'device_cal_progress_v1';
 //   3. fit A_device = m·A_master + c    (with sanity guards)
 //   4. VALIDATE: re-measure the standard as an unknown, accept within ±10%
 export default function DeviceCalibrationScreen({ route, navigation }) {
+  // Source: phone camera (default) or a WiFi box.
+  const sourceType = route.params?.sourceType || 'phone'; // 'phone' | 'box'
+  const boxIp = route.params?.boxIp || null;
+  const deviceKey = route.params?.deviceKey || phoneDeviceKey();
+  const deviceLabel = route.params?.deviceLabel || getDeviceModel();
+  const PROGRESS_KEY = `${PROGRESS_KEY_BASE}:${deviceKey}`;
+
   const [masterPoints, setMasterPoints] = useState([]);
   const [progress, setProgress] = useState({ standardPpm: '150' });
   const [existingCal, setExistingCal] = useState(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
       setMasterPoints(await loadCalibrationPoints());
-      setExistingCal(await loadDeviceCal());
+      setExistingCal(await loadDeviceCal(deviceKey));
       try {
         const raw = await AsyncStorage.getItem(PROGRESS_KEY);
         if (raw) setProgress(JSON.parse(raw));
@@ -80,9 +90,10 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
       blankA: p.blankA,
       standardA: p.standardA,
       masterHash: masterCurveHash(masterPoints),
+      deviceModel: deviceLabel,
       validated: false,
       validation: null,
-    });
+    }, deviceKey);
     setExistingCal(record);
     await persist({ ...p, fitted: true });
     Alert.alert(
@@ -92,7 +103,7 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
   };
 
   const handleValidation = async (absorbance, p) => {
-    const cal = await loadDeviceCal();
+    const cal = await loadDeviceCal(deviceKey);
     if (!cal) return;
     const res = computeHardnessDeviceAware({ absorbance }, masterPoints, cal);
     const nominal = parseFloat(p.standardPpm);
@@ -109,7 +120,7 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
         pass,
         at: new Date().toISOString(),
       },
-    });
+    }, deviceKey);
     setExistingCal(record);
 
     if (pass) {
@@ -117,7 +128,7 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
       await persist({ standardPpm: p.standardPpm, done: true });
       Alert.alert(
         'Validation passed ✓',
-        `Standard measured ${measured} ppm (nominal ${nominal} ppm, within ±${VALIDATION_TOLERANCE * 100}%).\nThis phone is calibrated.`
+        `Standard measured ${measured} ppm (nominal ${nominal} ppm, within ±${VALIDATION_TOLERANCE * 100}%).\n${deviceLabel} is calibrated.`
       );
     } else {
       Alert.alert(
@@ -132,7 +143,25 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
     setProgress({ standardPpm: progress.standardPpm || '150' });
   };
 
-  const goMeasure = (what) => navigation.navigate('Camera', { captureFor: what });
+  // Phone source → route through the camera flow (returns via route.captured).
+  // Box source → call /measure directly and handle the absorbance inline.
+  const goMeasure = async (what) => {
+    if (sourceType === 'box') {
+      setBusy(true);
+      try {
+        const m = await postMeasure(boxIp);
+        if (m.ok === false) { Alert.alert('Measurement error', m.error || 'Box returned an error.'); return; }
+        if (typeof m.A_blue !== 'number') { Alert.alert('No reading', 'Box did not return A_blue.'); return; }
+        await handleCaptured({ for: what, absorbance: m.A_blue });
+      } catch (e) {
+        Alert.alert('Box unreachable', e.message || 'Could not run the measurement.');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    navigation.navigate('Camera', { captureFor: what });
+  };
 
   const masterReady = masterPoints.filter((pt) => typeof pt.absorbance === 'number').length >= 2;
   const ppmValid = Number.isFinite(parseFloat(progress.standardPpm)) && parseFloat(progress.standardPpm) > 0;
@@ -145,10 +174,11 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.infoCard}>
-        <Text style={styles.infoTitle}>Calibrate this phone · {getDeviceModel()}</Text>
+        <Text style={styles.infoTitle}>Calibrate · {deviceLabel}</Text>
         <Text style={styles.infoText}>
-          Two measurements map this phone onto the master curve: the reagent blank and one
-          known standard. A validation run then confirms the fit.
+          Two measurements map {sourceType === 'box' ? 'this box' : 'this phone'} onto the master
+          curve: the reagent blank and one known standard. A validation run then confirms the fit.
+          {sourceType === 'box' ? ' Measurements run on the box over WiFi.' : ''}
         </Text>
       </View>
 
@@ -186,11 +216,11 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
         </Text>
         {step === 1 && (
           <TouchableOpacity
-            style={[styles.measureBtn, (!masterReady || !ppmValid) && styles.btnDisabled]}
-            disabled={!masterReady || !ppmValid}
+            style={[styles.measureBtn, (!masterReady || !ppmValid || busy) && styles.btnDisabled]}
+            disabled={!masterReady || !ppmValid || busy}
             onPress={() => goMeasure('device-blank')}
           >
-            <Text style={styles.measureBtnText}>📷 Measure blank</Text>
+            <Text style={styles.measureBtnText}>{busy ? '… measuring' : (sourceType === 'box' ? '📡 Measure blank' : '📷 Measure blank')}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -204,8 +234,8 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
           Bottle with the {progress.standardPpm || '—'} ppm standard, reagent added.
         </Text>
         {step === 2 && (
-          <TouchableOpacity style={styles.measureBtn} onPress={() => goMeasure('device-standard')}>
-            <Text style={styles.measureBtnText}>📷 Measure standard</Text>
+          <TouchableOpacity style={[styles.measureBtn, busy && styles.btnDisabled]} disabled={busy} onPress={() => goMeasure('device-standard')}>
+            <Text style={styles.measureBtnText}>{busy ? '… measuring' : (sourceType === 'box' ? '📡 Measure standard' : '📷 Measure standard')}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -222,8 +252,8 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
             : ''}
         </Text>
         {step === 3 && (
-          <TouchableOpacity style={styles.measureBtn} onPress={() => goMeasure('device-validate')}>
-            <Text style={styles.measureBtnText}>📷 Validation run</Text>
+          <TouchableOpacity style={[styles.measureBtn, busy && styles.btnDisabled]} disabled={busy} onPress={() => goMeasure('device-validate')}>
+            <Text style={styles.measureBtnText}>{busy ? '… measuring' : (sourceType === 'box' ? '📡 Validation run' : '📷 Validation run')}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -231,7 +261,7 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
       {step === 4 && (
         <View style={styles.successBox}>
           <Text style={styles.successText}>
-            ✓ This phone is calibrated (m = {existingCal.m}, c = {existingCal.c}).{'\n'}
+            ✓ {deviceLabel} is calibrated (m = {existingCal.m}, c = {existingCal.c}).{'\n'}
             Validated {existingCal.validation?.measuredPpm} ppm against {existingCal.validation?.nominalPpm} ppm.
           </Text>
         </View>

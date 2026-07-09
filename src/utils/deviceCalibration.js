@@ -20,6 +20,16 @@ export function getDeviceModel() {
   return name || `${Platform.OS} device`;
 }
 
+// A device key identifies which calibration factor applies. The phone camera
+// is one device; each WiFi box (by box_id) is another. This lets the same
+// per-device calibration model cover phones and boxes uniformly.
+export function phoneDeviceKey() {
+  return `phone:${getDeviceModel()}`;
+}
+export function boxDeviceKey(boxId) {
+  return `box:${boxId}`;
+}
+
 // ─── Master curve ────────────────────────────────────────────────────────────
 // The master curve is the existing calibration-point list, built once on the
 // reference phone. Only points carrying absorbance participate.
@@ -172,26 +182,54 @@ export function computeHardnessDeviceAware(analysis, masterPoints, deviceCal) {
   return ppm !== null ? { ppm, deviceCalibrated: !!factorValid } : null;
 }
 
-// ─── Device-factor persistence ───────────────────────────────────────────────
-export async function loadDeviceCal() {
+// ─── Device-factor persistence (keyed by device) ─────────────────────────────
+// Stored as a map { [deviceKey]: record }. A legacy single record (pre-map,
+// no deviceKey) is migrated to the phone key on first load.
+async function loadCalMap() {
   try {
     const raw = await AsyncStorage.getItem(DEVICE_CAL_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && (parsed.m !== undefined || parsed.c !== undefined)) {
+      // legacy single record → migrate under the phone key
+      const migrated = { [phoneDeviceKey()]: parsed };
+      await AsyncStorage.setItem(DEVICE_CAL_KEY, JSON.stringify(migrated));
+      return migrated;
+    }
+    return parsed || {};
   } catch {
-    return null;
+    return {};
   }
 }
 
-export async function saveDeviceCal(cal) {
+export async function loadDeviceCal(deviceKey) {
+  const key = deviceKey || phoneDeviceKey();
+  const map = await loadCalMap();
+  return map[key] || null;
+}
+
+export async function saveDeviceCal(cal, deviceKey) {
+  const key = deviceKey || phoneDeviceKey();
+  const map = await loadCalMap();
   const record = {
     ...cal,
-    deviceModel: getDeviceModel(),
+    deviceKey: key,
+    deviceModel: cal.deviceModel || getDeviceModel(),
     fittedAt: cal.fittedAt || new Date().toISOString(),
   };
-  await AsyncStorage.setItem(DEVICE_CAL_KEY, JSON.stringify(record));
+  map[key] = record;
+  await AsyncStorage.setItem(DEVICE_CAL_KEY, JSON.stringify(map));
   return record;
 }
 
-export async function clearDeviceCal() {
-  await AsyncStorage.removeItem(DEVICE_CAL_KEY);
+export async function clearDeviceCal(deviceKey) {
+  const key = deviceKey || phoneDeviceKey();
+  const map = await loadCalMap();
+  delete map[key];
+  await AsyncStorage.setItem(DEVICE_CAL_KEY, JSON.stringify(map));
+}
+
+export async function listDeviceCals() {
+  const map = await loadCalMap();
+  return Object.values(map);
 }

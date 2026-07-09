@@ -11,6 +11,9 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import PanelSetupScreen from './src/screens/PanelSetupScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DeviceCalibrationScreen from './src/screens/DeviceCalibrationScreen';
+import DeviceConnectScreen from './src/screens/DeviceConnectScreen';
+import DeviceHomeScreen from './src/screens/DeviceHomeScreen';
+import DeviceSetupScreen from './src/screens/DeviceSetupScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -69,7 +72,22 @@ export default function App() {
         <Stack.Screen
           name="DeviceCalibration"
           component={DeviceCalibrationScreen}
-          options={{ title: 'Calibrate This Phone' }}
+          options={{ title: 'Device Calibration' }}
+        />
+        <Stack.Screen
+          name="DeviceConnect"
+          component={DeviceConnectScreen}
+          options={{ title: 'WiFi Device' }}
+        />
+        <Stack.Screen
+          name="DeviceHome"
+          component={DeviceHomeScreen}
+          options={{ title: 'Measurement Box' }}
+        />
+        <Stack.Screen
+          name="DeviceSetup"
+          component={DeviceSetupScreen}
+          options={{ title: 'Box ROI Setup' }}
         />
       </Stack.Navigator>
     </NavigationContainer>

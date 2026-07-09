@@ -75,7 +75,16 @@ export default function HomeScreen({ navigation }) {
         onPress={() => navigation.navigate('Camera')}
         activeOpacity={0.85}
       >
-        <Text style={styles.primaryButtonText}>📷  Start New Test</Text>
+        <Text style={styles.primaryButtonText}>📷  Phone Camera Test</Text>
+      </TouchableOpacity>
+
+      {/* WiFi device */}
+      <TouchableOpacity
+        style={styles.wifiButton}
+        onPress={() => navigation.navigate('DeviceConnect')}
+        activeOpacity={0.85}
+      >
+        <Text style={styles.wifiButtonText}>📡  WiFi Measurement Box</Text>
       </TouchableOpacity>
 
       {/* Secondary actions */}
@@ -151,6 +160,12 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginBottom: 12, elevation: 4,
   },
   primaryButtonText: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
+
+  wifiButton: {
+    backgroundColor: '#00838F', borderRadius: 16, paddingVertical: 16,
+    alignItems: 'center', marginBottom: 12, elevation: 3,
+  },
+  wifiButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
 
   secondaryRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   secondaryButton: {
