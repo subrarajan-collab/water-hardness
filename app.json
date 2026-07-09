@@ -29,7 +29,8 @@
           "cameraPermission": "Allow Water Hardness Tester to access your camera to capture water samples."
         }
       ],
-      "./plugins/withAgpVersion"
+      "./plugins/withAgpVersion",
+      "./plugins/withCleartextTraffic"
     ],
     "owner": "nagapavi",
     "extra": {
