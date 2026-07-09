@@ -7,14 +7,18 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
-  FlatList,
+  Share,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   loadCalibrationPoints,
   saveCalibrationPoint,
   deleteCalibrationPoint,
   clearCalibration,
 } from '../utils/calibration';
+import { exportMasterCurve, parseMasterCurve, masterCurveHash } from '../utils/deviceCalibration';
+
+const CALIBRATION_KEY = 'calibration_points';
 
 export default function CalibrationScreen({ route, navigation }) {
   const prefillBlueScore = route.params?.blueScore ?? null;
@@ -26,6 +30,8 @@ export default function CalibrationScreen({ route, navigation }) {
   );
   const [hardnessPPM, setHardnessPPM] = useState('');
   const [label, setLabel] = useState('');
+  const [importText, setImportText] = useState('');
+  const [showImport, setShowImport] = useState(false);
 
   useEffect(() => {
     loadPoints();
@@ -34,6 +40,44 @@ export default function CalibrationScreen({ route, navigation }) {
   const loadPoints = async () => {
     const pts = await loadCalibrationPoints();
     setPoints(pts);
+  };
+
+  const absPoints = points.filter((p) => typeof p.absorbance === 'number');
+
+  const doExport = async () => {
+    if (absPoints.length < 2) {
+      Alert.alert('Nothing to export', 'Add 2+ absorbance points first.');
+      return;
+    }
+    try {
+      await Share.share({ message: exportMasterCurve(points), title: 'Water hardness master curve' });
+    } catch {}
+  };
+
+  const doImport = () => {
+    try {
+      const { points: imported, hash } = parseMasterCurve(importText.trim());
+      Alert.alert(
+        'Import master curve',
+        `${imported.length} points (hash ${hash}). This REPLACES the current calibration curve. Continue?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Replace',
+            style: 'destructive',
+            onPress: async () => {
+              await AsyncStorage.setItem(CALIBRATION_KEY, JSON.stringify(imported));
+              setImportText('');
+              setShowImport(false);
+              loadPoints();
+              Alert.alert('Imported', `Master curve installed (${imported.length} points).`);
+            },
+          },
+        ]
+      );
+    } catch (e) {
+      Alert.alert('Invalid curve', e.message || 'Could not parse the pasted JSON.');
+    }
   };
 
   const addPoint = async () => {
@@ -97,6 +141,42 @@ export default function CalibrationScreen({ route, navigation }) {
         <Text style={styles.infoText}>
           Measure known-hardness samples through the app and tap “Calibrate” on the result — the absorbance A = log₁₀(I_ref / I_water) is pre-filled. Enter the known ppm and save. Absorbance is immune to auto-exposure drift, so the curve holds across sessions and phones. Add 2+ points to enable ppm readings (piecewise-linear).
         </Text>
+      </View>
+
+      {/* Export / import */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Master Curve</Text>
+        <Text style={styles.exportInfo}>
+          {absPoints.length} absorbance point{absPoints.length !== 1 ? 's' : ''}
+          {absPoints.length >= 2 ? `  ·  hash ${masterCurveHash(points)}` : '  (need 2+)'}
+        </Text>
+        <View style={styles.btnRow}>
+          <TouchableOpacity style={styles.exportBtn} onPress={doExport}>
+            <Text style={styles.exportBtnText}>📤 Export (share JSON)</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.importToggleBtn} onPress={() => setShowImport(!showImport)}>
+            <Text style={styles.importToggleBtnText}>📥 Import</Text>
+          </TouchableOpacity>
+        </View>
+        {showImport && (
+          <>
+            <TextInput
+              style={styles.importBox}
+              value={importText}
+              onChangeText={setImportText}
+              placeholder="Paste the exported master-curve JSON here…"
+              placeholderTextColor="#90A4AE"
+              multiline
+            />
+            <TouchableOpacity
+              style={[styles.addBtn, { marginTop: 8 }, !importText.trim() && styles.disabledBtn]}
+              disabled={!importText.trim()}
+              onPress={doImport}
+            >
+              <Text style={styles.addBtnText}>Install curve</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
 
       {/* Add point form */}
@@ -254,4 +334,17 @@ const styles = StyleSheet.create({
     marginTop: 12, borderLeftWidth: 3, borderLeftColor: '#2E7D32',
   },
   successText: { color: '#1B5E20', fontSize: 12 },
+
+  exportInfo: { color: '#546E7A', fontSize: 12, marginBottom: 10 },
+  btnRow: { flexDirection: 'row', gap: 10 },
+  exportBtn: { flex: 1, backgroundColor: '#1565C0', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  exportBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
+  importToggleBtn: { borderWidth: 1, borderColor: '#1565C0', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, alignItems: 'center' },
+  importToggleBtnText: { color: '#1565C0', fontWeight: '600', fontSize: 13 },
+  importBox: {
+    backgroundColor: '#F5F5F5', borderRadius: 10, padding: 12, marginTop: 10,
+    minHeight: 100, textAlignVertical: 'top', fontSize: 12, color: '#1A237E',
+    borderWidth: 1, borderColor: '#E0E0E0',
+  },
+  disabledBtn: { backgroundColor: '#B0BEC5' },
 });

@@ -17,18 +17,12 @@
         "backgroundColor": "#1565C0"
       },
       "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.ACCESS_NETWORK_STATE"
       ],
       "package": "com.waterquality.hardnesstester"
     },
     "plugins": [
-      [
-        "expo-camera",
-        {
-          "cameraPermission": "Allow Water Hardness Tester to access your camera to capture water samples."
-        }
-      ],
       "./plugins/withAgpVersion",
       "./plugins/withCleartextTraffic"
     ],

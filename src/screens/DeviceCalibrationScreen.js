@@ -6,30 +6,28 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { loadCalibrationPoints } from '../utils/calibration';
 import {
   fitDeviceFactor, saveDeviceCal, loadDeviceCal, masterCurveHash,
-  computeHardnessDeviceAware, VALIDATION_TOLERANCE, getDeviceModel,
-  phoneDeviceKey,
+  computeHardnessDeviceAware, VALIDATION_TOLERANCE,
 } from '../utils/deviceCalibration';
-import { postMeasure } from '../api/boxClient';
+import { postMeasure, createCancelToken } from '../api/boxClient';
+import MeasureProgress from '../components/MeasureProgress';
 
 const PROGRESS_KEY_BASE = 'device_cal_progress_v1';
 
-// Guided per-phone calibration:
+// Guided per-box calibration:
 //   1. measure the reagent BLANK        → A_blank
 //   2. measure one known STANDARD       → A_std
 //   3. fit A_device = m·A_master + c    (with sanity guards)
 //   4. VALIDATE: re-measure the standard as an unknown, accept within ±10%
 export default function DeviceCalibrationScreen({ route, navigation }) {
-  // Source: phone camera (default) or a WiFi box.
-  const sourceType = route.params?.sourceType || 'phone'; // 'phone' | 'box'
   const boxIp = route.params?.boxIp || null;
-  const deviceKey = route.params?.deviceKey || phoneDeviceKey();
-  const deviceLabel = route.params?.deviceLabel || getDeviceModel();
-  const PROGRESS_KEY = `${PROGRESS_KEY_BASE}:${deviceKey}`;
+  const deviceKey = route.params?.deviceKey || null;
+  const deviceLabel = route.params?.deviceLabel || 'this box';
+  const PROGRESS_KEY = `${PROGRESS_KEY_BASE}:${deviceKey || 'unknown'}`;
 
   const [masterPoints, setMasterPoints] = useState([]);
   const [progress, setProgress] = useState({ standardPpm: '150' });
   const [existingCal, setExistingCal] = useState(null);
-  const [busy, setBusy] = useState(false);
+  const [measuring, setMeasuring] = useState(null); // { label, token } | null
 
   useEffect(() => {
     (async () => {
@@ -47,7 +45,7 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
     await AsyncStorage.setItem(PROGRESS_KEY, JSON.stringify(p)).catch(() => {});
   };
 
-  // ── Receive a measurement back from Camera → Result ───────────────────────
+  // ── Receive a measurement handed back from the Result screen ──────────────
   useEffect(() => {
     const captured = route.params?.captured;
     if (!captured) return;
@@ -79,8 +77,7 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
     });
     if (fit.error) {
       Alert.alert('Fit rejected', fit.error);
-      // clear the standard so the user re-measures after fixing the issue
-      await persist({ ...p, standardA: undefined });
+      await persist({ ...p, standardA: undefined }); // re-measure after fixing
       return;
     }
     const record = await saveDeviceCal({
@@ -114,12 +111,7 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
     const record = await saveDeviceCal({
       ...cal,
       validated: pass,
-      validation: {
-        nominalPpm: nominal,
-        measuredPpm: measured,
-        pass,
-        at: new Date().toISOString(),
-      },
+      validation: { nominalPpm: nominal, measuredPpm: measured, pass, at: new Date().toISOString() },
     }, deviceKey);
     setExistingCal(record);
 
@@ -143,29 +135,24 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
     setProgress({ standardPpm: progress.standardPpm || '150' });
   };
 
-  // Phone source → route through the camera flow (returns via route.captured).
-  // Box source → call /measure directly and handle the absorbance inline.
-  const goMeasure = async (what) => {
-    if (sourceType === 'box') {
-      setBusy(true);
-      try {
-        const m = await postMeasure(boxIp);
-        if (typeof m.A_blue !== 'number') { Alert.alert('No reading', 'Box did not return A_blue.'); return; }
-        await handleCaptured({ for: what, absorbance: m.A_blue });
-      } catch (e) {
-        // e.kind: 'network' (unreachable), 'http' (firmware/app mismatch),
-        // 'gate' (box rejected — clipping, no blank, etc.), 'cancelled'.
-        const title = e.kind === 'gate' ? 'Measurement rejected'
-          : e.kind === 'http' ? 'Firmware mismatch'
-          : e.kind === 'cancelled' ? 'Cancelled'
-          : 'Box unreachable';
-        Alert.alert(title, e.message || 'Could not run the measurement.');
-      } finally {
-        setBusy(false);
-      }
-      return;
+  const alertTitleFor = (e) => e.kind === 'gate' ? 'Measurement rejected'
+    : e.kind === 'http' ? 'Firmware mismatch'
+    : e.kind === 'cancelled' ? 'Cancelled'
+    : 'Box unreachable';
+
+  const goMeasure = async (what, label) => {
+    if (!boxIp) { Alert.alert('No box connected', 'Go back to Home and connect first.'); return; }
+    const token = createCancelToken();
+    setMeasuring({ label, token });
+    try {
+      const m = await postMeasure(boxIp, { signal: token.signal });
+      if (typeof m.A_blue !== 'number') { Alert.alert('No reading', 'Box did not return A_blue.'); return; }
+      await handleCaptured({ for: what, absorbance: m.A_blue });
+    } catch (e) {
+      Alert.alert(alertTitleFor(e), e.message || 'Could not run the measurement.');
+    } finally {
+      setMeasuring(null);
     }
-    navigation.navigate('Camera', { captureFor: what });
   };
 
   const masterReady = masterPoints.filter((pt) => typeof pt.absorbance === 'number').length >= 2;
@@ -181,22 +168,19 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
       <View style={styles.infoCard}>
         <Text style={styles.infoTitle}>Calibrate · {deviceLabel}</Text>
         <Text style={styles.infoText}>
-          Two measurements map {sourceType === 'box' ? 'this box' : 'this phone'} onto the master
-          curve: the reagent blank and one known standard. A validation run then confirms the fit.
-          {sourceType === 'box' ? ' Measurements run on the box over WiFi.' : ''}
+          Two measurements map this box onto the master curve: the reagent blank and one known
+          standard. A validation run then confirms the fit. Measurements run on the box over WiFi.
         </Text>
       </View>
 
       {!masterReady && (
         <View style={styles.warnBox}>
           <Text style={styles.warnText}>
-            ⚠️ No master curve. Build one on the Calibration screen (2+ absorbance points) or
-            import one in Settings first.
+            ⚠️ No master curve. Build one on the Master Curve screen (2+ absorbance points) first.
           </Text>
         </View>
       )}
 
-      {/* Standard ppm */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Standard concentration</Text>
         <TextInput
@@ -211,45 +195,36 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
         <Text style={styles.fieldNote}>ppm CaCO₃ of the known standard (default 150)</Text>
       </View>
 
-      {/* Step 1: blank */}
       <View style={[styles.card, step === 1 && styles.cardActive]}>
         <Text style={styles.cardTitle}>
           1. Reagent blank {typeof progress.blankA === 'number' ? `✓  A = ${progress.blankA.toFixed(3)}` : ''}
         </Text>
-        <Text style={styles.stepText}>
-          Bottle with reagent-treated ZERO-hardness water (distilled + reagent).
-        </Text>
+        <Text style={styles.stepText}>Bottle with reagent-treated ZERO-hardness water (distilled + reagent).</Text>
         {step === 1 && (
           <TouchableOpacity
-            style={[styles.measureBtn, (!masterReady || !ppmValid || busy) && styles.btnDisabled]}
-            disabled={!masterReady || !ppmValid || busy}
-            onPress={() => goMeasure('device-blank')}
+            style={[styles.measureBtn, (!masterReady || !ppmValid) && styles.btnDisabled]}
+            disabled={!masterReady || !ppmValid}
+            onPress={() => goMeasure('device-blank', 'Measuring blank…')}
           >
-            <Text style={styles.measureBtnText}>{busy ? '… measuring' : (sourceType === 'box' ? '📡 Measure blank' : '📷 Measure blank')}</Text>
+            <Text style={styles.measureBtnText}>📡 Measure blank</Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Step 2: standard */}
       <View style={[styles.card, step === 2 && styles.cardActive]}>
         <Text style={styles.cardTitle}>
           2. Known standard {typeof progress.standardA === 'number' ? `✓  A = ${progress.standardA.toFixed(3)}` : ''}
         </Text>
-        <Text style={styles.stepText}>
-          Bottle with the {progress.standardPpm || '—'} ppm standard, reagent added.
-        </Text>
+        <Text style={styles.stepText}>Bottle with the {progress.standardPpm || '—'} ppm standard, reagent added.</Text>
         {step === 2 && (
-          <TouchableOpacity style={[styles.measureBtn, busy && styles.btnDisabled]} disabled={busy} onPress={() => goMeasure('device-standard')}>
-            <Text style={styles.measureBtnText}>{busy ? '… measuring' : (sourceType === 'box' ? '📡 Measure standard' : '📷 Measure standard')}</Text>
+          <TouchableOpacity style={styles.measureBtn} onPress={() => goMeasure('device-standard', 'Measuring standard…')}>
+            <Text style={styles.measureBtnText}>📡 Measure standard</Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Step 3: validation */}
       <View style={[styles.card, step === 3 && styles.cardActive]}>
-        <Text style={styles.cardTitle}>
-          3. Validate {existingCal?.validated ? '✓ passed' : ''}
-        </Text>
+        <Text style={styles.cardTitle}>3. Validate {existingCal?.validated ? '✓ passed' : ''}</Text>
         <Text style={styles.stepText}>
           Re-measure the same standard as an unknown. Accepted within ±{VALIDATION_TOLERANCE * 100}% of nominal.
           {existingCal?.validation && !existingCal.validated
@@ -257,8 +232,8 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
             : ''}
         </Text>
         {step === 3 && (
-          <TouchableOpacity style={[styles.measureBtn, busy && styles.btnDisabled]} disabled={busy} onPress={() => goMeasure('device-validate')}>
-            <Text style={styles.measureBtnText}>{busy ? '… measuring' : (sourceType === 'box' ? '📡 Validation run' : '📷 Validation run')}</Text>
+          <TouchableOpacity style={styles.measureBtn} onPress={() => goMeasure('device-validate', 'Validation run…')}>
+            <Text style={styles.measureBtnText}>📡 Validation run</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -275,6 +250,12 @@ export default function DeviceCalibrationScreen({ route, navigation }) {
       <TouchableOpacity style={styles.restartBtn} onPress={restart}>
         <Text style={styles.restartBtnText}>↺ Restart calibration</Text>
       </TouchableOpacity>
+
+      <MeasureProgress
+        visible={!!measuring}
+        label={measuring?.label}
+        onCancel={() => measuring?.token.cancel()}
+      />
     </ScrollView>
   );
 }
@@ -310,9 +291,7 @@ const styles = StyleSheet.create({
   },
   fieldNote: { color: '#90A4AE', fontSize: 11, marginTop: 6 },
 
-  measureBtn: {
-    backgroundColor: '#1565C0', borderRadius: 12, paddingVertical: 13, alignItems: 'center',
-  },
+  measureBtn: { backgroundColor: '#1565C0', borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
   measureBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 14 },
   btnDisabled: { backgroundColor: '#B0BEC5' },
 

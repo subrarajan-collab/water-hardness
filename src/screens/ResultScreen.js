@@ -3,36 +3,19 @@ import {
   View, Text, StyleSheet, ScrollView,
   TouchableOpacity, Image, ActivityIndicator, Alert,
 } from 'react-native';
-import * as FileSystem from 'expo-file-system';
-import { analyzeImageColors, getHardnessLabel } from '../utils/colorAnalysis';
+import { getHardnessLabel } from '../utils/colorAnalysis';
 import { loadCalibrationPoints, saveTestResult } from '../utils/calibration';
 import {
-  loadDeviceCal, computeHardnessDeviceAware, masterCurveHash, getDeviceModel,
+  loadDeviceCal, computeHardnessDeviceAware, masterCurveHash,
 } from '../utils/deviceCalibration';
+import { thumbUrl } from '../api/boxClient';
 
 const APP_VERSION = require('../../package.json').version;
 
-// Camera output lives in the app cache, which Android may clear at any time.
-// Copy the preview into the persistent document directory before saving history.
-async function persistImage(uri) {
-  if (!uri) return null;
-  try {
-    const dir = FileSystem.documentDirectory + 'results/';
-    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-    const dest = dir + Date.now() + '.jpg';
-    await FileSystem.copyAsync({ from: uri, to: dest });
-    return dest;
-  } catch {
-    return uri; // fall back to the volatile uri rather than losing the entry
-  }
-}
-
 export default function ResultScreen({ route, navigation }) {
-  // New averaged-video path: { analysisData, sampleUri, frameCount }
-  // Old single-frame path:    { croppedUri, originalUri }
   const {
-    analysisData, sampleUri, frameCount, croppedUri, originalUri, captureFor,
-    deviceKey, boxMeta, skipDeviceLoad, preloadedDeviceCal, preloadedMaster,
+    analysisData, boxMeta, captureFor,
+    deviceKey, skipDeviceLoad, preloadedDeviceCal, preloadedMaster,
   } = route.params;
 
   const [result, setResult]           = useState(null);
@@ -41,13 +24,9 @@ export default function ResultScreen({ route, navigation }) {
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState(null);
   const [saved, setSaved]             = useState(false);
-  const [ppmSource, setPpmSource]     = useState(null); // 'absorbance' | 'blue' | null
   const [deviceCal, setDeviceCal]     = useState(null);
   const [deviceCalibrated, setDeviceCalibrated] = useState(false);
   const [masterHash, setMasterHash]   = useState(null);
-
-  // Determine which image to display as the analysed-region preview
-  const previewUri = sampleUri ?? croppedUri ?? null;
 
   useEffect(() => {
     runAnalysis();
@@ -57,37 +36,21 @@ export default function ResultScreen({ route, navigation }) {
     setLoading(true);
     setError(null);
     try {
-      let data;
-
-      if (analysisData) {
-        // ── New path: averaged data already computed in CameraScreen ──
-        data = analysisData;
-      } else {
-        // ── Legacy path: single cropped image ──
-        data = await analyzeImageColors(croppedUri);
-      }
-
+      const data = analysisData;
       const calPoints = preloadedMaster ?? (await loadCalibrationPoints());
       const dCal = skipDeviceLoad ? (preloadedDeviceCal ?? null) : await loadDeviceCal(deviceKey);
       setDeviceCal(dCal);
       setMasterHash(masterCurveHash(calPoints));
 
-      // Device-aware pipeline: invert A_device = m·A_master + c, then look up
-      // ppm on the master curve. Falls back to the master curve directly.
+      // Invert A_device = m·A_master + c, then look up ppm on the master
+      // curve. Falls back to the master curve directly with no device factor.
       const res = computeHardnessDeviceAware(data, calPoints, dCal);
       const ppm = res?.ppm ?? null;
       setDeviceCalibrated(res?.deviceCalibrated ?? false);
 
-      const lbl = getHardnessLabel(data.blueDominance);
-      // Detect whether ppm came from the exposure-immune absorbance curve
-      const usingAbs =
-        typeof data.absorbance === 'number' &&
-        calPoints.length >= 2 &&
-        calPoints.every((p) => typeof p.absorbance === 'number');
       setResult(data);
       setHardnessPPM(ppm);
-      setLabel(lbl);
-      setPpmSource(ppm !== null ? (usingAbs ? 'absorbance' : 'blue') : null);
+      setLabel(getHardnessLabel(data.blueDominance));
     } catch (e) {
       setError(e.message || 'Analysis failed');
     } finally {
@@ -97,37 +60,27 @@ export default function ResultScreen({ route, navigation }) {
 
   const saveResult = async () => {
     if (!result || saved) return;
-    const persistedUri = await persistImage(previewUri);
     await saveTestResult({
       blueScore: result.blueScore,
       blueDominance: result.blueDominance,
       r: result.r, g: result.g, b: result.b,
       hardnessPPM,
       label: label?.label,
-      imageUri: persistedUri,
-      frameCount: result.frameCount ?? 1,
+      frameCount: result.frameCount ?? null,
       rejectedFrames: result.rejectedFrames ?? 0,
-      blueScoreStdDev: result.blueScoreStdDev,
+      absorbanceStdDev: result.absorbanceStdDev ?? null,
       absorbance: result.absorbance ?? null,
       absorbanceR: result.absorbanceR ?? null,
       absorbanceG: result.absorbanceG ?? null,
-      transmittance: result.transmittance ?? null,
-      bgBlue: result.bgBlue ?? null,
-      refMismatch: result.refMismatch ?? null,
-      // Raw per-frame patch + ROI values (kept frames), for offline analysis
-      frames: result.frames ?? null,
-      method: result.method ?? null, // 'flatfield' | 'single'
-      ppmSource,
-      // Traceability: which device, factor, curve and app produced this number
-      deviceModel: boxMeta ? `${boxMeta.box_id}` : getDeviceModel(),
-      deviceKey: deviceKey ?? null,
+      // Traceability: which box, factor, curve, and app version produced this
       boxId: boxMeta?.box_id ?? null,
       fwVersion: boxMeta?.fw_version ?? null,
+      deviceKey: deviceKey ?? null,
       deviceFactor: deviceCal ? { m: deviceCal.m, c: deviceCal.c } : null,
       deviceCalibrated,
       masterCurveHash: masterHash,
       appVersion: APP_VERSION,
-      // WiFi-box diagnostics
+      // Box diagnostics
       satFraction: result.satFraction ?? null,
       darkLevel: result.darkLevel ?? null,
       blankAgeS: result.blankAgeS ?? null,
@@ -144,7 +97,7 @@ export default function ResultScreen({ route, navigation }) {
         {loading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="large" color="#1565C0" />
-            <Text style={styles.loadingText}>Analysing colour intensity…</Text>
+            <Text style={styles.loadingText}>Analysing…</Text>
           </View>
 
         ) : error ? (
@@ -163,6 +116,7 @@ export default function ResultScreen({ route, navigation }) {
                 style={styles.captureForBtn}
                 onPress={() =>
                   navigation.navigate('DeviceCalibration', {
+                    boxIp: boxMeta?.ip, deviceKey, deviceLabel: boxMeta?.box_id,
                     captured: { for: captureFor, absorbance: result.absorbance },
                   })
                 }
@@ -175,49 +129,41 @@ export default function ResultScreen({ route, navigation }) {
               </TouchableOpacity>
             )}
 
-            {/* ── Device warnings from the WiFi box ── */}
+            {/* ── Gate warnings from the box (prominent, not buried) ── */}
             {Array.isArray(result.warnings) && result.warnings.length > 0 && (
               <View style={styles.warnBanner}>
-                <Text style={styles.warnBannerText}>⚠ {result.warnings.join(' · ')}</Text>
+                <Text style={styles.warnBannerTitle}>⚠ Box warnings</Text>
+                {result.warnings.map((w, i) => (
+                  <Text key={i} style={styles.warnBannerText}>• {w}</Text>
+                ))}
               </View>
             )}
 
-            {/* ── Per-device calibration status ── */}
+            {/* ── Per-box calibration status ── */}
             {hardnessPPM !== null && !deviceCalibrated && (
               <TouchableOpacity
                 style={styles.notCalBadge}
-                onPress={() =>
-                  boxMeta
-                    ? navigation.navigate('DeviceCalibration', {
-                        sourceType: 'box', boxIp: boxMeta.ip, deviceKey,
-                        deviceLabel: boxMeta.box_id,
-                      })
-                    : navigation.navigate('DeviceCalibration')
-                }
+                onPress={() => navigation.navigate('DeviceCalibration', {
+                  boxIp: boxMeta?.ip, deviceKey, deviceLabel: boxMeta?.box_id,
+                })}
               >
                 <Text style={styles.notCalBadgeText}>
-                  {boxMeta
-                    ? '⚠ This box is not calibrated — using master curve directly. Tap to calibrate.'
-                    : '⚠ Not calibrated for this phone — using master curve directly. Tap to calibrate.'}
+                  ⚠ This box is not calibrated — using master curve directly. Tap to calibrate.
                 </Text>
               </TouchableOpacity>
             )}
 
-            {/* ── Averaged badge (only for multi-frame results) ── */}
+            {/* ── Frame summary ── */}
             {result.frameCount > 1 && (
               <View style={styles.avgBadge}>
                 <Text style={styles.avgBadgeText}>
-                  📊 {result.method === 'flatfield' ? 'Flat-field · ' : result.method === 'single' ? 'Single-shot · ' : result.method === 'wifi-device' ? 'WiFi box · ' : ''}
-                  Averaged over {result.frameCount} frames
+                  📊 Averaged over {result.frameCount} frames
                   {result.rejectedFrames > 0 ? ` (${result.rejectedFrames} outlier${result.rejectedFrames > 1 ? 's' : ''} rejected)` : ''}
-                  {result.blueScoreStdDev !== undefined
-                    ? `  ·  σ = ${result.blueScoreStdDev}`
-                    : ''}
                 </Text>
               </View>
             )}
 
-            {/* ── Colour swatch + label ── */}
+            {/* ── A_blue primary + ppm ── */}
             <View style={[styles.resultCard, { borderTopColor: label?.color }]}>
               <View style={styles.swatchRow}>
                 <View style={[styles.swatch, { backgroundColor: `rgb(${result.r},${result.g},${result.b})` }]} />
@@ -231,9 +177,7 @@ export default function ResultScreen({ route, navigation }) {
                     ? <>
                         <Text style={styles.ppmText}>{hardnessPPM} ppm CaCO₃</Text>
                         <Text style={styles.ppmSrc}>
-                          {ppmSource === 'absorbance'
-                            ? (deviceCalibrated ? 'absorbance curve + device factor ✓' : 'absorbance curve (no device factor)')
-                            : 'from raw blue (drift-prone)'}
+                          {deviceCalibrated ? 'master curve + device factor ✓' : 'master curve (no device factor)'}
                         </Text>
                       </>
                     : <Text style={styles.uncalText}>Add calibration points for ppm reading</Text>
@@ -244,107 +188,35 @@ export default function ResultScreen({ route, navigation }) {
 
             {/* ── Metrics ── */}
             <View style={styles.metricsCard}>
-              <Text style={styles.metricsTitle}>Colour Analysis</Text>
+              <Text style={styles.metricsTitle}>Measurement</Text>
 
-              {/* Absorbance (exposure-immune) — the PRIMARY metric */}
-              {typeof result.absorbance === 'number' && (
-                <>
-                  <View style={styles.metricRow}>
-                    <Text style={[styles.metricName, { fontWeight: '700', color: '#1565C0', fontSize: 14 }]}>
-                      Absorbance  A_blue = log₁₀(I_ref / I_water)
-                    </Text>
-                    <Text style={[styles.metricValue, { fontSize: 18 }]}>{result.absorbance.toFixed(3)}</Text>
-                  </View>
-                  <View style={styles.barBg}>
-                    <View style={[styles.barFill, {
-                      width: `${Math.min(100, (result.absorbance / 1.5) * 100)}%`,
-                      backgroundColor: '#6A1B9A',
-                    }]} />
-                  </View>
-
-                  {(typeof result.absorbanceR === 'number' || typeof result.absorbanceG === 'number') && (
-                    <View style={styles.metricRow}>
-                      <Text style={styles.metricName}>A_red · A_green (per channel)</Text>
-                      <Text style={styles.metricValue}>
-                        {typeof result.absorbanceR === 'number' ? result.absorbanceR.toFixed(3) : '—'}
-                        {' · '}
-                        {typeof result.absorbanceG === 'number' ? result.absorbanceG.toFixed(3) : '—'}
-                      </Text>
-                    </View>
-                  )}
-                  <View style={styles.metricRow}>
-                    <Text style={styles.metricName}>Blue Transmittance (water / ref)</Text>
-                    <Text style={styles.metricValue}>
-                      {typeof result.transmittance === 'number' ? `${(result.transmittance * 100).toFixed(1)}%` : '—'}
-                    </Text>
-                  </View>
-                  <View style={styles.metricRow}>
-                    <Text style={styles.metricName}>Reference Blue · Water Blue</Text>
-                    <Text style={styles.metricValue}>{result.bgBlue} · {result.blueScore}</Text>
-                  </View>
-                  {typeof result.refMismatch === 'number' && (() => {
-                    const isFF = result.method === 'flatfield';
-                    const limit = isFF ? 0.03 : 0.04;
-                    return (
-                      <View style={styles.metricRow}>
-                        <Text style={styles.metricName}>
-                          {isFF ? 'Exposure bridge L/R agreement' : 'L/R patch mismatch'}
-                        </Text>
-                        <Text style={[styles.metricValue, {
-                          color: result.refMismatch <= limit ? '#2E7D32' : '#C62828',
-                        }]}>
-                          {(result.refMismatch * 100).toFixed(1)}%
-                          {result.refMismatch <= limit ? ' ✓' : ' ⚠'}
-                        </Text>
-                      </View>
-                    );
-                  })()}
-                  {typeof result.absorbanceStdDev === 'number' && (
-                    <Text style={styles.absNote}>
-                      Absorbance σ = {result.absorbanceStdDev.toFixed(3)} across frames — immune to auto-exposure drift.
-                    </Text>
-                  )}
-                  <View style={styles.absDivider} />
-                </>
+              {(typeof result.absorbanceR === 'number' || typeof result.absorbanceG === 'number') && (
+                <View style={styles.metricRow}>
+                  <Text style={styles.metricName}>A_red · A_green (per channel)</Text>
+                  <Text style={styles.metricValue}>
+                    {typeof result.absorbanceR === 'number' ? result.absorbanceR.toFixed(3) : '—'}
+                    {' · '}
+                    {typeof result.absorbanceG === 'number' ? result.absorbanceG.toFixed(3) : '—'}
+                  </Text>
+                </View>
               )}
 
-              {/* Raw values — secondary once absorbance is available */}
-              <View style={styles.metricRow}>
-                <Text style={styles.metricName}>
-                  Blue Score (0–255){typeof result.absorbance === 'number' ? ' — secondary' : ''}
-                </Text>
-                <Text style={styles.metricValue}>{result.blueScore}</Text>
-              </View>
-              <View style={styles.barBg}>
-                <View style={[styles.barFill, { width: `${(result.blueScore / 255) * 100}%`, backgroundColor: '#1565C0' }]} />
-              </View>
-
-              <View style={styles.metricRow}>
-                <Text style={styles.metricName}>Blue Dominance</Text>
-                <Text style={styles.metricValue}>{result.blueDominance}%</Text>
-              </View>
-              <View style={styles.barBg}>
-                <View style={[styles.barFill, { width: `${result.blueDominance}%`, backgroundColor: '#29B6F6' }]} />
-              </View>
-
-              {/* Stability indicator (std dev) */}
-              {result.blueScoreStdDev !== undefined && (
+              {typeof result.absorbanceStdDev === 'number' && (
                 <>
                   <View style={styles.metricRow}>
-                    <Text style={styles.metricName}>Reading Stability (σ)</Text>
-                    <Text style={[
-                      styles.metricValue,
-                      { color: result.blueScoreStdDev < 5 ? '#2E7D32' : result.blueScoreStdDev < 12 ? '#FF8F00' : '#C62828' },
-                    ]}>
-                      {result.blueScoreStdDev}
-                      {'  '}
-                      {result.blueScoreStdDev < 5 ? '✓ Stable' : result.blueScoreStdDev < 12 ? '~ Fair' : '⚠ Unstable'}
+                    <Text style={styles.metricName}>Stability (σ across kept frames)</Text>
+                    <Text style={[styles.metricValue, {
+                      color: result.absorbanceStdDev < 0.01 ? '#2E7D32'
+                        : result.absorbanceStdDev < 0.03 ? '#FF8F00' : '#C62828',
+                    }]}>
+                      {result.absorbanceStdDev.toFixed(4)}
+                      {result.absorbanceStdDev < 0.01 ? ' ✓ Stable' : result.absorbanceStdDev < 0.03 ? ' ~ Fair' : ' ⚠ Unstable'}
                     </Text>
                   </View>
                   <View style={styles.barBg}>
                     <View style={[styles.barFill, {
-                      width: `${Math.min(100, (result.blueScoreStdDev / 30) * 100)}%`,
-                      backgroundColor: result.blueScoreStdDev < 5 ? '#2E7D32' : result.blueScoreStdDev < 12 ? '#FF8F00' : '#C62828',
+                      width: `${Math.min(100, (result.absorbanceStdDev / 0.06) * 100)}%`,
+                      backgroundColor: result.absorbanceStdDev < 0.01 ? '#2E7D32' : result.absorbanceStdDev < 0.03 ? '#FF8F00' : '#C62828',
                     }]} />
                   </View>
                 </>
@@ -361,17 +233,44 @@ export default function ResultScreen({ route, navigation }) {
               </View>
             </View>
 
-            {/* ── Preview frame ── */}
-            {previewUri && (
+            {/* ── Diagnostics (gates ✓/⚠) ── */}
+            <View style={styles.metricsCard}>
+              <Text style={styles.metricsTitle}>Diagnostics</Text>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricName}>ROI saturation</Text>
+                <Text style={[styles.metricValue, {
+                  color: (result.satFraction ?? 0) < 0.01 ? '#2E7D32' : '#C62828',
+                }]}>
+                  {((result.satFraction ?? 0) * 100).toFixed(2)}%
+                  {(result.satFraction ?? 0) < 0.01 ? ' ✓' : ' ⚠'}
+                </Text>
+              </View>
+              {result.darkLevel && (
+                <View style={styles.metricRow}>
+                  <Text style={styles.metricName}>Dark level (R/G/B)</Text>
+                  <Text style={styles.metricValue}>
+                    {result.darkLevel.r?.toFixed?.(0)} / {result.darkLevel.g?.toFixed?.(0)} / {result.darkLevel.b?.toFixed?.(0)}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.metricRow}>
+                <Text style={styles.metricName}>Blank age</Text>
+                <Text style={[styles.metricValue, {
+                  color: (result.blankAgeS ?? -1) < 0 || (result.blankAgeS ?? 0) > 86400 ? '#C62828' : '#2E7D32',
+                }]}>
+                  {result.blankAgeS === null || result.blankAgeS === undefined ? '—'
+                    : result.blankAgeS < 0 ? 'unknown ⚠'
+                    : result.blankAgeS > 86400 ? `${(result.blankAgeS / 3600).toFixed(1)}h ⚠`
+                    : `${Math.round(result.blankAgeS)}s ✓`}
+                </Text>
+              </View>
+            </View>
+
+            {/* ── Box view (best-effort live thumbnail, not persisted) ── */}
+            {boxMeta?.ip && (
               <View style={styles.previewCard}>
-                <Text style={styles.metricsTitle}>
-                  {result.frameCount > 1 ? 'Sample Frame (mid-recording)' : 'Analysed Region'}
-                </Text>
-                <Image source={{ uri: previewUri }} style={styles.preview} resizeMode="contain" />
-                <Text style={styles.pixelCount}>
-                  {result.pixelCount.toLocaleString()} pixels analysed per frame
-                  {result.frameCount > 1 ? ` · ${result.frameCount} frames` : ''}
-                </Text>
+                <Text style={styles.metricsTitle}>Box view (live)</Text>
+                <Image source={{ uri: thumbUrl(boxMeta.ip) }} style={styles.preview} resizeMode="cover" />
               </View>
             )}
 
@@ -387,7 +286,6 @@ export default function ResultScreen({ route, navigation }) {
               <TouchableOpacity
                 style={[styles.actionBtn, styles.calBtn]}
                 onPress={() => navigation.navigate('Calibration', {
-                  blueScore: result.blueScore,
                   absorbance: result.absorbance ?? null,
                 })}
               >
@@ -395,8 +293,8 @@ export default function ResultScreen({ route, navigation }) {
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={styles.newTestBtn} onPress={() => navigation.navigate('Camera')}>
-              <Text style={styles.newTestBtnText}>📷  New Test</Text>
+            <TouchableOpacity style={styles.newTestBtn} onPress={() => navigation.navigate('Home')}>
+              <Text style={styles.newTestBtnText}>📡  New Measurement</Text>
             </TouchableOpacity>
           </>
         ) : null}
@@ -443,15 +341,14 @@ const styles = StyleSheet.create({
   },
   notCalBadgeText: { color: '#E65100', fontSize: 12, fontWeight: '600' },
   warnBanner: {
-    backgroundColor: '#FFEBEE', borderRadius: 10, padding: 10,
+    backgroundColor: '#FFEBEE', borderRadius: 10, padding: 12,
     marginBottom: 14, borderLeftWidth: 4, borderLeftColor: '#C62828',
   },
-  warnBannerText: { color: '#B71C1C', fontSize: 12, fontWeight: '600' },
+  warnBannerTitle: { color: '#B71C1C', fontSize: 13, fontWeight: 'bold', marginBottom: 4 },
+  warnBannerText: { color: '#B71C1C', fontSize: 12, lineHeight: 17 },
   ppmText: { color: '#1565C0', fontSize: 16, fontWeight: 'bold', marginTop: 4 },
   ppmSrc: { color: '#78909C', fontSize: 11, marginTop: 1 },
   uncalText: { color: '#FF8F00', fontSize: 12, marginTop: 4, fontStyle: 'italic' },
-  absDivider: { height: 1, backgroundColor: '#E0E0E0', marginVertical: 12 },
-  absNote: { color: '#78909C', fontSize: 11, marginTop: 2, marginBottom: 4, lineHeight: 15 },
 
   metricsCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 16, elevation: 2 },
   metricsTitle: { fontSize: 15, fontWeight: 'bold', color: '#1565C0', marginBottom: 14 },
@@ -467,8 +364,7 @@ const styles = StyleSheet.create({
   rgbVal: { color: '#1A237E', fontSize: 16, fontWeight: 'bold' },
 
   previewCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, marginBottom: 16, elevation: 2 },
-  preview: { width: '100%', height: 120, borderRadius: 8, marginTop: 8, backgroundColor: '#F0F0F0' },
-  pixelCount: { color: '#90A4AE', fontSize: 11, textAlign: 'center', marginTop: 6 },
+  preview: { width: '100%', height: 160, borderRadius: 8, marginTop: 8, backgroundColor: '#F0F0F0' },
 
   actionsRow: { flexDirection: 'row', gap: 12, marginBottom: 12 },
   actionBtn: { flex: 1, borderRadius: 14, paddingVertical: 14, alignItems: 'center', elevation: 2 },

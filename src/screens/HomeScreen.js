@@ -1,121 +1,240 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  Image,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, ActivityIndicator,
 } from 'react-native';
-import { loadCalibrationPoints, loadHistory } from '../utils/calibration';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  connectAndVerify, getStatus, postBlank, postMeasure, measureToAnalysis,
+  createCancelToken, DEFAULT_IP, EXPECTED_API_VERSION,
+} from '../api/boxClient';
+import { loadCalibrationPoints } from '../utils/calibration';
+import { loadDeviceCal, boxDeviceKey } from '../utils/deviceCalibration';
+import DebugPanel from '../components/DebugPanel';
+import MeasureProgress from '../components/MeasureProgress';
+
+const LAST_IP_KEY = 'wifi_last_ip';
+
+function ageText(s) {
+  if (s === null || s === undefined || s < 0) return 'unknown — recapture';
+  if (s < 90) return `${Math.round(s)}s ago`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  const h = s / 3600;
+  return `${h.toFixed(1)} h ago${h > 24 ? ' — recapture' : ''}`;
+}
+
+function alertTitleFor(e) {
+  return e.kind === 'gate' ? 'Measurement rejected'
+    : e.kind === 'http' ? 'Firmware mismatch'
+    : e.kind === 'cancelled' ? 'Cancelled'
+    : 'Box unreachable';
+}
 
 export default function HomeScreen({ navigation }) {
-  const [calibrationCount, setCalibrationCount] = useState(0);
-  const [testCount, setTestCount] = useState(0);
+  const [ip, setIp] = useState(DEFAULT_IP);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [statusError, setStatusError] = useState(null);
+  const [apiVersionMatch, setApiVersionMatch] = useState(true);
+  const [apiVersion, setApiVersion] = useState(null);
+
+  const [debugVisible, setDebugVisible] = useState(false);
+  const [progress, setProgress] = useState(null); // { label, token } | null
+
+  const boxId = status?.box_id;
+  const deviceKey = boxId ? boxDeviceKey(boxId) : null;
+  const hasPreview = !!status?.capabilities?.preview;
+  const connected = !!status;
 
   useEffect(() => {
-    const unsubscribe = navigation.addListener('focus', async () => {
-      const cal = await loadCalibrationPoints();
-      const hist = await loadHistory();
-      setCalibrationCount(cal.length);
-      setTestCount(hist.length);
-    });
-    return unsubscribe;
-  }, [navigation]);
+    AsyncStorage.getItem(LAST_IP_KEY).then((v) => { if (v) setIp(v); }).catch(() => {});
+  }, []);
 
+  const refresh = useCallback(async () => {
+    if (!connected) return;
+    try {
+      const s = await getStatus(ip);
+      setStatus(s);
+      setStatusError(null);
+    } catch (e) {
+      setStatusError(e.message || 'Status refresh failed');
+    }
+  }, [ip, connected]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', refresh);
+    return unsub;
+  }, [navigation, refresh]);
+
+  const connect = async () => {
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      const r = await connectAndVerify(ip);
+      await AsyncStorage.setItem(LAST_IP_KEY, ip).catch(() => {});
+      setStatus(r.status);
+      setApiVersion(r.apiVersion);
+      setApiVersionMatch(r.apiVersionMatch);
+      setStatusError(null);
+    } catch (e) {
+      setConnectError(e.message || 'Could not connect to the box.');
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const disconnect = () => {
+    setStatus(null);
+    setStatusError(null);
+  };
+
+  const captureBlank = async () => {
+    const token = createCancelToken();
+    setProgress({ label: 'Capturing blank…', token });
+    try {
+      const r = await postBlank(ip, { signal: token.signal });
+      Alert.alert('Blank captured ✓', `ROI net blue ${r.roi_net?.b?.toFixed?.(1) ?? '—'}. Now measure a sample.`);
+      await refresh();
+    } catch (e) {
+      Alert.alert(alertTitleFor(e), e.message || 'Blank capture failed.');
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const measure = async () => {
+    const token = createCancelToken();
+    setProgress({ label: 'Measuring sample…', token });
+    try {
+      const m = await postMeasure(ip, { signal: token.signal });
+      const analysis = measureToAnalysis(m);
+      const calPoints = await loadCalibrationPoints();
+      const dCal = deviceKey ? await loadDeviceCal(deviceKey) : null;
+      navigation.navigate('Result', {
+        analysisData: analysis,
+        boxMeta: { box_id: boxId, fw_version: status?.fw_version, ip },
+        deviceKey,
+        preloadedDeviceCal: dCal,
+        preloadedMaster: calPoints,
+      });
+    } catch (e) {
+      Alert.alert(alertTitleFor(e), e.message || 'Measurement failed.');
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  // ── Not connected: show the connect form ──────────────────────────────────
+  if (!connected) {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <View style={styles.infoCard}>
+          <Text style={styles.infoTitle}>💧 AQUA-BOX Water Hardness Tester</Text>
+          <Text style={styles.infoText}>
+            Power the box, join its WiFi network “AQUA-BOX” on this phone, then connect.
+            The box is at {DEFAULT_IP} by default.
+          </Text>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Box IP address</Text>
+          <TextInput
+            style={styles.input}
+            value={ip}
+            onChangeText={setIp}
+            keyboardType="numbers-and-punctuation"
+            autoCapitalize="none"
+            placeholder={DEFAULT_IP}
+            placeholderTextColor="#90A4AE"
+          />
+          <TouchableOpacity
+            style={[styles.connectBtn, connecting && styles.btnDisabled]}
+            onPress={connect}
+            disabled={connecting}
+          >
+            {connecting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.connectBtnText}>Connect</Text>}
+          </TouchableOpacity>
+        </View>
+
+        {connectError && (
+          <View style={styles.errBox}>
+            <Text style={styles.errText}>{connectError}</Text>
+          </View>
+        )}
+      </ScrollView>
+    );
+  }
+
+  // ── Connected: status + measure ───────────────────────────────────────────
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.dropletIcon}>
-          <Text style={styles.dropletText}>💧</Text>
-        </View>
-        <Text style={styles.title}>Water Hardness Tester</Text>
-        <Text style={styles.subtitle}>
-          Measure water hardness by analyzing blue colour intensity of your reagent solution
-        </Text>
-      </View>
-
-      {/* How it works */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>How It Works</Text>
-        <View style={styles.step}>
-          <View style={styles.stepNum}><Text style={styles.stepNumText}>1</Text></View>
-          <Text style={styles.stepText}>Add reagent to water sample — solution turns blue</Text>
-        </View>
-        <View style={styles.step}>
-          <View style={styles.stepNum}><Text style={styles.stepNumText}>2</Text></View>
-          <Text style={styles.stepText}>Capture photo of the test tube</Text>
-        </View>
-        <View style={styles.step}>
-          <View style={styles.stepNum}><Text style={styles.stepNumText}>3</Text></View>
-          <Text style={styles.stepText}>Select the liquid region in the image</Text>
-        </View>
-        <View style={styles.step}>
-          <View style={styles.stepNum}><Text style={styles.stepNumText}>4</Text></View>
-          <Text style={styles.stepText}>Get blue intensity score and hardness reading</Text>
-        </View>
-      </View>
-
-      {/* Stats row */}
-      <View style={styles.statsRow}>
-        <View style={styles.statCard}>
-          <Text style={styles.statNum}>{testCount}</Text>
-          <Text style={styles.statLabel}>Tests Done</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statNum}>{calibrationCount}</Text>
-          <Text style={styles.statLabel}>Cal. Points</Text>
-        </View>
-      </View>
-
-      {/* Main action */}
       <TouchableOpacity
-        style={styles.primaryButton}
-        onPress={() => navigation.navigate('Camera')}
-        activeOpacity={0.85}
+        style={styles.card}
+        onLongPress={() => setDebugVisible(true)}
+        delayLongPress={500}
+        activeOpacity={0.8}
       >
-        <Text style={styles.primaryButtonText}>📷  Phone Camera Test</Text>
+        <Text style={styles.cardTitle}>{status?.device_type || 'device'} · {boxId || '—'}</Text>
+        <Text style={styles.metaText}>
+          fw {status?.fw_version || '—'} (api v{apiVersion ?? '?'}
+          {apiVersionMatch ? '' : `, app expects v${EXPECTED_API_VERSION} ⚠`}) · uptime {status?.uptime ?? '—'}s{'\n'}
+          blank: {ageText(status?.blank_age_s)}
+        </Text>
+        {statusError && <Text style={styles.statusErrText}>⚠ {statusError}</Text>}
+        {!apiVersionMatch && (
+          <Text style={styles.apiWarnText}>
+            ⚠ Firmware/app version mismatch — some features may fail. Update firmware or app.
+          </Text>
+        )}
+        <Text style={styles.longPressHint}>long-press for debug info</Text>
       </TouchableOpacity>
 
-      {/* WiFi device */}
-      <TouchableOpacity
-        style={styles.wifiButton}
-        onPress={() => navigation.navigate('DeviceConnect')}
-        activeOpacity={0.85}
-      >
-        <Text style={styles.wifiButtonText}>📡  WiFi Measurement Box</Text>
+      <TouchableOpacity style={styles.measureBtn} onPress={measure}>
+        <Text style={styles.measureBtnText}>📡  Measure sample</Text>
       </TouchableOpacity>
 
-      {/* Secondary actions */}
-      <View style={styles.secondaryRow}>
+      <View style={styles.row}>
         <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={() => navigation.navigate('Calibration')}
+          style={styles.secBtn}
+          onPress={() => navigation.navigate('BoxSetup', { ip, status })}
         >
-          <Text style={styles.secondaryButtonText}>⚙️  Calibration</Text>
+          <Text style={styles.secBtnText}>🎛 Box Setup</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={() => navigation.navigate('History')}
-        >
-          <Text style={styles.secondaryButtonText}>📋  History</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={() => navigation.navigate('Settings')}
-        >
-          <Text style={styles.secondaryButtonText}>🔧  Settings</Text>
+        <TouchableOpacity style={styles.secBtn} onPress={() => navigation.navigate('History')}>
+          <Text style={styles.secBtnText}>📋 History</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Tip */}
-      <View style={styles.tipBox}>
-        <Text style={styles.tipTitle}>📌 Tip for accurate results</Text>
-        <Text style={styles.tipText}>
-          Photograph the test tube against a plain white or light-coloured background. Hold the tube steady and use good lighting. Avoid direct sunlight glare on the glass.
-        </Text>
+      <View style={styles.row}>
+        <TouchableOpacity style={styles.secBtn} onPress={() => navigation.navigate('Calibration')}>
+          <Text style={styles.secBtnText}>📈 Master Curve</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.secBtn}
+          onPress={() => navigation.navigate('DeviceCalibration', {
+            boxIp: ip, deviceKey,
+            deviceLabel: `${status?.device_type || 'box'} ${boxId || ''}`.trim(),
+          })}
+        >
+          <Text style={styles.secBtnText}>⚙️ Calibrate Box</Text>
+        </TouchableOpacity>
       </View>
+
+      <View style={styles.row}>
+        <TouchableOpacity style={styles.linkBtn} onPress={refresh}>
+          <Text style={styles.linkText}>↻ Refresh status</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.linkBtn} onPress={disconnect}>
+          <Text style={styles.linkText}>Disconnect</Text>
+        </TouchableOpacity>
+      </View>
+
+      <MeasureProgress
+        visible={!!progress}
+        label={progress?.label}
+        onCancel={() => progress?.token.cancel()}
+      />
+      <DebugPanel visible={debugVisible} onClose={() => setDebugVisible(false)} />
     </ScrollView>
   );
 }
@@ -124,60 +243,38 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#E3F2FD' },
   content: { padding: 20, paddingBottom: 40 },
 
-  header: { alignItems: 'center', marginBottom: 24 },
-  dropletIcon: {
-    width: 80, height: 80, borderRadius: 40,
-    backgroundColor: '#1565C0', justifyContent: 'center', alignItems: 'center',
-    marginBottom: 12, elevation: 4,
+  infoCard: {
+    backgroundColor: '#E8EAF6', borderRadius: 16, padding: 16, marginBottom: 16,
+    borderLeftWidth: 4, borderLeftColor: '#3949AB',
   },
-  dropletText: { fontSize: 36 },
-  title: { fontSize: 24, fontWeight: 'bold', color: '#1565C0', textAlign: 'center' },
-  subtitle: { fontSize: 14, color: '#546E7A', textAlign: 'center', marginTop: 6, lineHeight: 20 },
+  infoTitle: { fontWeight: 'bold', color: '#3949AB', marginBottom: 6, fontSize: 16 },
+  infoText: { color: '#37474F', fontSize: 13, lineHeight: 19 },
 
-  card: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 20,
-    marginBottom: 16, elevation: 2,
+  card: { backgroundColor: '#FFF', borderRadius: 16, padding: 18, marginBottom: 16, elevation: 2 },
+  cardTitle: { fontSize: 15, fontWeight: 'bold', color: '#1565C0', marginBottom: 8 },
+  fieldLabel: { fontSize: 12, color: '#546E7A', fontWeight: '600', marginBottom: 6 },
+  input: {
+    backgroundColor: '#F5F5F5', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
+    fontSize: 16, color: '#1A237E', borderWidth: 1, borderColor: '#E0E0E0', marginBottom: 14,
   },
-  cardTitle: { fontSize: 16, fontWeight: 'bold', color: '#1565C0', marginBottom: 14 },
-  step: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  stepNum: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: '#1565C0',
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
-  },
-  stepNumText: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
-  stepText: { flex: 1, fontSize: 14, color: '#37474F', lineHeight: 20 },
+  connectBtn: { backgroundColor: '#1565C0', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  connectBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
+  btnDisabled: { backgroundColor: '#B0BEC5' },
+  errBox: { backgroundColor: '#FFF3E0', borderRadius: 12, padding: 14, borderLeftWidth: 4, borderLeftColor: '#EF6C00' },
+  errText: { color: '#E65100', fontSize: 13, lineHeight: 19 },
 
-  statsRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
-  statCard: {
-    flex: 1, backgroundColor: '#1565C0', borderRadius: 16,
-    padding: 16, alignItems: 'center', elevation: 2,
-  },
-  statNum: { fontSize: 28, fontWeight: 'bold', color: '#FFFFFF' },
-  statLabel: { fontSize: 12, color: '#BBDEFB', marginTop: 4 },
+  metaText: { color: '#546E7A', fontSize: 13, lineHeight: 19 },
+  statusErrText: { color: '#C62828', fontSize: 12, marginTop: 8, fontWeight: '600' },
+  apiWarnText: { color: '#EF6C00', fontSize: 12, marginTop: 8, fontWeight: '600' },
+  longPressHint: { color: '#B0BEC5', fontSize: 10, marginTop: 10, textAlign: 'right' },
 
-  primaryButton: {
-    backgroundColor: '#1565C0', borderRadius: 16, paddingVertical: 18,
-    alignItems: 'center', marginBottom: 12, elevation: 4,
-  },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
+  measureBtn: { backgroundColor: '#1565C0', borderRadius: 16, paddingVertical: 18, alignItems: 'center', marginBottom: 12, elevation: 3 },
+  measureBtnText: { color: '#FFF', fontSize: 17, fontWeight: 'bold' },
 
-  wifiButton: {
-    backgroundColor: '#00838F', borderRadius: 16, paddingVertical: 16,
-    alignItems: 'center', marginBottom: 12, elevation: 3,
-  },
-  wifiButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
+  row: { flexDirection: 'row', gap: 12, marginBottom: 12 },
+  secBtn: { flex: 1, backgroundColor: '#FFF', borderRadius: 14, paddingVertical: 14, alignItems: 'center', borderWidth: 1, borderColor: '#BBDEFB' },
+  secBtnText: { color: '#1565C0', fontWeight: '600', fontSize: 13 },
 
-  secondaryRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
-  secondaryButton: {
-    flex: 1, backgroundColor: '#FFFFFF', borderRadius: 16, paddingVertical: 14,
-    alignItems: 'center', elevation: 2, borderWidth: 1, borderColor: '#BBDEFB',
-  },
-  secondaryButtonText: { color: '#1565C0', fontSize: 14, fontWeight: '600' },
-
-  tipBox: {
-    backgroundColor: '#FFF9C4', borderRadius: 16, padding: 16,
-    borderLeftWidth: 4, borderLeftColor: '#F9A825',
-  },
-  tipTitle: { fontSize: 13, fontWeight: 'bold', color: '#F57F17', marginBottom: 6 },
-  tipText: { fontSize: 13, color: '#5D4037', lineHeight: 19 },
+  linkBtn: { flex: 1, alignItems: 'center', paddingVertical: 8 },
+  linkText: { color: '#546E7A', fontSize: 13 },
 });

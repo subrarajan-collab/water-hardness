@@ -6,8 +6,46 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
+  Share,
 } from 'react-native';
 import { loadHistory, clearHistory } from '../utils/calibration';
+
+function csvEscape(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+const CSV_COLUMNS = [
+  ['testedAt', (i) => i.testedAt],
+  ['boxId', (i) => i.boxId],
+  ['fwVersion', (i) => i.fwVersion],
+  ['label', (i) => i.label],
+  ['hardnessPPM', (i) => i.hardnessPPM],
+  ['absorbance', (i) => i.absorbance],
+  ['absorbanceR', (i) => i.absorbanceR],
+  ['absorbanceG', (i) => i.absorbanceG],
+  ['absorbanceStdDev', (i) => i.absorbanceStdDev],
+  ['blueScore', (i) => i.blueScore],
+  ['blueDominance', (i) => i.blueDominance],
+  ['frameCount', (i) => i.frameCount],
+  ['rejectedFrames', (i) => i.rejectedFrames],
+  ['satFraction', (i) => i.satFraction],
+  ['blankAgeS', (i) => i.blankAgeS],
+  ['deviceCalibrated', (i) => i.deviceCalibrated],
+  ['deviceFactorM', (i) => i.deviceFactor?.m],
+  ['deviceFactorC', (i) => i.deviceFactor?.c],
+  ['masterCurveHash', (i) => i.masterCurveHash],
+  ['appVersion', (i) => i.appVersion],
+];
+
+function toCsv(history) {
+  const header = CSV_COLUMNS.map(([name]) => name).join(',');
+  const rows = history.map((item) =>
+    CSV_COLUMNS.map(([, get]) => csvEscape(get(item))).join(',')
+  );
+  return [header, ...rows].join('\n');
+}
 
 export default function HistoryScreen({ navigation }) {
   const [history, setHistory] = useState([]);
@@ -36,6 +74,16 @@ export default function HistoryScreen({ navigation }) {
     ]);
   };
 
+  const handleExportCsv = async () => {
+    if (history.length === 0) {
+      Alert.alert('Nothing to export', 'Run a test and save it first.');
+      return;
+    }
+    try {
+      await Share.share({ message: toCsv(history), title: 'Water hardness history.csv' });
+    } catch {}
+  };
+
   const renderItem = ({ item }) => {
     const labelColor = getLabelColor(item.label);
     return (
@@ -49,7 +97,11 @@ export default function HistoryScreen({ navigation }) {
             ) : null}
           </View>
           <Text style={styles.itemSub}>
-            Blue score: {item.blueScore} · Dominance: {item.blueDominance}%
+            {typeof item.absorbance === 'number' ? `A_blue ${item.absorbance.toFixed(3)}` : `Blue ${item.blueScore}`}
+            {item.deviceCalibrated ? ' · calibrated ✓' : ''}
+          </Text>
+          <Text style={styles.itemMeta}>
+            {item.boxId ? `box ${item.boxId}` : ''}{item.fwVersion ? ` · fw ${item.fwVersion}` : ''}
           </Text>
           <Text style={styles.itemDate}>
             {new Date(item.testedAt).toLocaleString()}
@@ -62,9 +114,14 @@ export default function HistoryScreen({ navigation }) {
   return (
     <View style={styles.container}>
       {history.length > 0 && (
-        <TouchableOpacity style={styles.clearBtn} onPress={handleClear}>
-          <Text style={styles.clearBtnText}>Clear History</Text>
-        </TouchableOpacity>
+        <View style={styles.toolbar}>
+          <TouchableOpacity style={styles.csvBtn} onPress={handleExportCsv}>
+            <Text style={styles.csvBtnText}>⬇ Export CSV</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.clearBtn} onPress={handleClear}>
+            <Text style={styles.clearBtnText}>Clear History</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       <FlatList
@@ -76,7 +133,7 @@ export default function HistoryScreen({ navigation }) {
           <View style={styles.empty}>
             <Text style={styles.emptyText}>No tests recorded yet.</Text>
             <Text style={styles.emptySubtext}>
-              Run a test and tap "Save Result" to see it here.
+              Run a measurement and tap "Save" to see it here.
             </Text>
           </View>
         }
@@ -99,9 +156,14 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#E3F2FD' },
   list: { padding: 16, paddingBottom: 32 },
 
+  toolbar: { flexDirection: 'row', gap: 10, margin: 16, marginBottom: 0 },
+  csvBtn: {
+    flex: 1, paddingVertical: 8, alignItems: 'center',
+    backgroundColor: '#1565C0', borderRadius: 8,
+  },
+  csvBtnText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
   clearBtn: {
-    alignSelf: 'flex-end', margin: 16, marginBottom: 0,
-    paddingHorizontal: 14, paddingVertical: 6,
+    paddingHorizontal: 14, paddingVertical: 8,
     backgroundColor: '#FFEBEE', borderRadius: 8,
   },
   clearBtnText: { color: '#C62828', fontSize: 13 },
@@ -116,6 +178,7 @@ const styles = StyleSheet.create({
   itemLabel: { fontSize: 15, fontWeight: 'bold' },
   itemPPM: { fontSize: 15, fontWeight: 'bold', color: '#1565C0' },
   itemSub: { color: '#546E7A', fontSize: 12, marginTop: 3 },
+  itemMeta: { color: '#90A4AE', fontSize: 11, marginTop: 1 },
   itemDate: { color: '#90A4AE', fontSize: 11, marginTop: 2 },
 
   empty: { alignItems: 'center', paddingTop: 80 },
