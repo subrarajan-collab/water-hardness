@@ -1,9 +1,9 @@
 import React from 'react';
-import { Text } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
+import { Ionicons } from '@expo/vector-icons';
 
 import { BoxConnectionProvider } from './src/context/BoxConnectionContext';
 import SetupScreen from './src/screens/SetupScreen';
@@ -55,16 +55,14 @@ function CalibrationTabNavigator() {
   );
 }
 
+// Proper vector icons (filled when active, outline when idle) + a taller
+// tab bar with bold, readable labels — replaces the small emoji tabs.
 const TAB_ICONS = {
-  SetupTab: '🎛',
-  CalibrationTab: '📈',
-  MeasurementTab: '📡',
-  ResultsTab: '📋',
+  SetupTab:       { active: 'settings',        idle: 'settings-outline' },
+  CalibrationTab: { active: 'flask',           idle: 'flask-outline' },
+  MeasurementTab: { active: 'speedometer',     idle: 'speedometer-outline' },
+  ResultsTab:     { active: 'document-text',   idle: 'document-text-outline' },
 };
-
-function TabIcon({ route, focused }) {
-  return <Text style={{ fontSize: 20, opacity: focused ? 1 : 0.5 }}>{TAB_ICONS[route.name]}</Text>;
-}
 
 export default function App() {
   return (
@@ -78,8 +76,24 @@ export default function App() {
             headerTintColor: '#FFFFFF',
             headerTitleStyle: { fontWeight: 'bold' },
             tabBarActiveTintColor: ACCENT,
-            tabBarInactiveTintColor: '#90A4AE',
-            tabBarIcon: ({ focused }) => <TabIcon route={route} focused={focused} />,
+            tabBarInactiveTintColor: '#78909C',
+            tabBarStyle: {
+              height: 68,
+              paddingTop: 6,
+              paddingBottom: 10,
+              backgroundColor: '#FFFFFF',
+              borderTopWidth: 1,
+              borderTopColor: '#E0E6EB',
+              elevation: 8,
+            },
+            tabBarLabelStyle: { fontSize: 12, fontWeight: '700' },
+            tabBarIcon: ({ focused, color }) => (
+              <Ionicons
+                name={focused ? TAB_ICONS[route.name].active : TAB_ICONS[route.name].idle}
+                size={26}
+                color={color}
+              />
+            ),
           })}
         >
           <Tab.Screen name="SetupTab" component={SetupScreen} options={{ title: 'Setup', tabBarLabel: 'Setup' }} />

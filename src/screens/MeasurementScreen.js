@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { postMeasure, postBlank, createCancelToken, thumbUrl, measureToAnalysis } from '../api/boxClient';
@@ -37,6 +37,17 @@ export default function MeasurementScreen({ navigation }) {
   const [saved, setSaved] = useState(false);
   const [setupDone, setSetupDone] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(true); // assume done until read
+  const [liveThumb, setLiveThumb] = useState(null);
+
+  // Live view of the sample chamber so the user can confirm the bottle is
+  // seated and lit before committing to a 25 s measurement. Paused while a
+  // measurement runs (the box camera is busy) and when showing a result.
+  useEffect(() => {
+    if (!connected || !hasPreview || progress || result) { setLiveThumb(null); return; }
+    setLiveThumb(thumbUrl(ip));
+    const t = setInterval(() => setLiveThumb(thumbUrl(ip)), 3000);
+    return () => clearInterval(t);
+  }, [connected, hasPreview, ip, progress, result]);
 
   const loadContext = useCallback(async () => {
     const pts = await loadCalibrationPoints();
@@ -198,6 +209,14 @@ export default function MeasurementScreen({ navigation }) {
             </Text>
           )}
 
+          {liveThumb && (
+            <View style={styles.liveCard}>
+              <Text style={styles.liveTitle}>Sample chamber (live)</Text>
+              <Image source={{ uri: liveThumb }} style={styles.livePreview} resizeMode="cover" />
+              <Text style={styles.liveHint}>Check the bottle is seated and lit before measuring.</Text>
+            </View>
+          )}
+
           <View style={styles.card}>
             <Text style={styles.fieldLabel}>Sample name (optional)</Text>
             <TextInput
@@ -261,6 +280,11 @@ const styles = StyleSheet.create({
   content: { padding: 20, paddingBottom: 40 },
 
   blankLine: { color: '#546E7A', fontSize: 12, marginBottom: 12, textAlign: 'center' },
+
+  liveCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 14, marginBottom: 16, elevation: 2 },
+  liveTitle: { fontSize: 13, fontWeight: 'bold', color: '#1565C0', marginBottom: 8 },
+  livePreview: { width: '100%', height: 170, borderRadius: 10, backgroundColor: '#000' },
+  liveHint: { color: '#90A4AE', fontSize: 11, marginTop: 8, textAlign: 'center' },
 
   card: { backgroundColor: '#FFF', borderRadius: 16, padding: 18, marginBottom: 16, elevation: 2 },
   fieldLabel: { fontSize: 12, color: '#546E7A', fontWeight: '600', marginBottom: 6 },

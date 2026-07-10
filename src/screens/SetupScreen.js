@@ -87,6 +87,10 @@ export default function SetupScreen() {
   const [bGain, setBGain] = useState(DEFAULT_CONFIG.b_gain);
   const [sel, setSel] = useState('roi');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // Patches A/B are diagnostics only — the hardness reading uses the ROI
+  // alone (dark-subtracted against the reference water). Keep them out of
+  // the main flow; experts can still place them from this toggle.
+  const [showPatches, setShowPatches] = useState(false);
 
   const [thumb, setThumb] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -306,22 +310,28 @@ export default function SetupScreen() {
         <Text style={styles.cardTitle}>Camera & Regions</Text>
         {hasPreview ? (
           <>
-            <Text style={styles.hint}>Drag onto the bottle (ROI) and bare lit panel (patches).</Text>
+            <Text style={styles.hint}>Drag the blue box onto the water sample.</Text>
             <View style={styles.previewWrap}>
               <View style={{ width: PREVIEW_W, height: PREVIEW_H }}>
                 {thumb && <Image source={{ uri: thumb }} style={styles.preview} resizeMode="cover" />}
-                <DraggableRect rect={roi} color="#29B6F6" label="ROI" onChange={setRoi} boxW={PREVIEW_W} boxH={PREVIEW_H} />
-                <DraggableRect rect={patchA} color="#FFEB3B" label="A" onChange={setPatchA} boxW={PREVIEW_W} boxH={PREVIEW_H} />
-                <DraggableRect rect={patchB} color="#FFEB3B" label="B" onChange={setPatchB} boxW={PREVIEW_W} boxH={PREVIEW_H} />
+                <DraggableRect rect={roi} color="#29B6F6" label="Sample" onChange={setRoi} boxW={PREVIEW_W} boxH={PREVIEW_H} />
+                {showPatches && (
+                  <>
+                    <DraggableRect rect={patchA} color="#FFEB3B" label="A" onChange={setPatchA} boxW={PREVIEW_W} boxH={PREVIEW_H} />
+                    <DraggableRect rect={patchB} color="#FFEB3B" label="B" onChange={setPatchB} boxW={PREVIEW_W} boxH={PREVIEW_H} />
+                  </>
+                )}
               </View>
             </View>
-            <View style={styles.selRow}>
-              {[['roi', 'ROI'], ['patchA', 'Patch A'], ['patchB', 'Patch B']].map(([k, lbl]) => (
-                <TouchableOpacity key={k} style={[styles.selBtn, sel === k && styles.selBtnActive]} onPress={() => setSel(k)}>
-                  <Text style={[styles.selBtnText, sel === k && styles.selBtnTextActive]}>{lbl}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            {showPatches && (
+              <View style={styles.selRow}>
+                {[['roi', 'Sample'], ['patchA', 'Patch A'], ['patchB', 'Patch B']].map(([k, lbl]) => (
+                  <TouchableOpacity key={k} style={[styles.selBtn, sel === k && styles.selBtnActive]} onPress={() => setSel(k)}>
+                    <Text style={[styles.selBtnText, sel === k && styles.selBtnTextActive]}>{lbl}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
             <View style={styles.sizeRow}>
               <Text style={styles.sizeLabel}>{(current.w * 100).toFixed(0)}×{(current.h * 100).toFixed(0)}%</Text>
               <TouchableOpacity style={styles.sizeBtn} onPress={() => resize(-0.02, 0)}><Text style={styles.sizeBtnText}>W−</Text></TouchableOpacity>
@@ -329,6 +339,14 @@ export default function SetupScreen() {
               <TouchableOpacity style={styles.sizeBtn} onPress={() => resize(0, -0.02)}><Text style={styles.sizeBtnText}>H−</Text></TouchableOpacity>
               <TouchableOpacity style={styles.sizeBtn} onPress={() => resize(0, 0.02)}><Text style={styles.sizeBtnText}>H+</Text></TouchableOpacity>
             </View>
+            <TouchableOpacity
+              style={styles.advancedToggle}
+              onPress={() => { const next = !showPatches; setShowPatches(next); if (!next) setSel('roi'); }}
+            >
+              <Text style={styles.advancedToggleText}>
+                {showPatches ? '▾' : '▸'} Diagnostic patches (not used in the reading)
+              </Text>
+            </TouchableOpacity>
           </>
         ) : (
           <Text style={styles.noPreviewText}>
