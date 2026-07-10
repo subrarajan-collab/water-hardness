@@ -3,7 +3,6 @@ import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, Share, Modal, ScrollView,
 } from 'react-native';
 import { loadHistory, clearHistory } from '../utils/calibration';
-import { getHardnessLabel } from '../utils/colorAnalysis';
 import ResultPanel from '../components/ResultPanel';
 
 function csvEscape(v) {
@@ -29,6 +28,10 @@ const CSV_COLUMNS = [
   ['rejectedFrames', (i) => i.rejectedFrames],
   ['satFraction', (i) => i.satFraction],
   ['blankAgeS', (i) => i.blankAgeS],
+  ['blankCapturedAt', (i) => i.blankCapturedAt],
+  ['qc', (i) => i.qc],
+  ['qcNominalPpm', (i) => i.qcNominalPpm],
+  ['qcPass', (i) => i.qcPass],
   ['deviceCalibrated', (i) => i.deviceCalibrated],
   ['deviceFactorM', (i) => i.deviceFactor?.m],
   ['deviceFactorC', (i) => i.deviceFactor?.c],
@@ -45,10 +48,15 @@ function toCsv(history) {
 function getLabelColor(label) {
   switch (label) {
     case 'Soft': return '#0288D1';
-    case 'Moderately Hard': return '#7B1FA2';
-    case 'Hard': return '#8E24AA';
-    case 'Very Hard': return '#C62828';
-    default: return '#546E7A';
+    // both old ("Moderately Hard") and new ("Moderately hard") casings exist
+    // in stored history — match case-insensitively.
+    default: {
+      const l = (label || '').toLowerCase();
+      if (l === 'moderately hard') return '#7B1FA2';
+      if (l === 'hard') return '#EF6C00';
+      if (l === 'very hard') return '#C62828';
+      return '#546E7A';
+    }
   }
 }
 
@@ -106,6 +114,13 @@ export default function ResultsScreen() {
         <View style={styles.itemInfo}>
           <View style={styles.itemRow}>
             <Text style={[styles.itemLabel, { color: labelColor }]}>{item.sampleName || item.label || 'Unknown'}</Text>
+            {item.qc && (
+              <View style={[styles.qcChip, { backgroundColor: item.qcPass ? '#E8F5E9' : '#FFEBEE' }]}>
+                <Text style={[styles.qcChipText, { color: item.qcPass ? '#2E7D32' : '#C62828' }]}>
+                  QC {item.qcPass ? '✓' : '✗'}
+                </Text>
+              </View>
+            )}
             {item.hardnessPPM !== null && item.hardnessPPM !== undefined ? (
               <Text style={styles.itemPPM}>{item.hardnessPPM} ppm</Text>
             ) : null}
@@ -175,9 +190,9 @@ export default function ResultsScreen() {
             <ResultPanel
               result={asResult(detail)}
               hardnessPPM={detail.hardnessPPM}
-              label={getHardnessLabel(detail.blueDominance)}
               deviceCalibrated={detail.deviceCalibrated}
               thumbUri={null}
+              masterHash={detail.masterCurveHash}
             />
           )}
           {detail && (
@@ -185,7 +200,7 @@ export default function ResultsScreen() {
               <Text style={styles.metaCardTitle}>Traceability</Text>
               <Text style={styles.metaCardText}>
                 box {detail.boxId || '—'} · fw {detail.fwVersion || '—'}{'\n'}
-                master curve hash {detail.masterCurveHash || '—'}{'\n'}
+                calibration version {detail.masterCurveHash || '—'}{'\n'}
                 app v{detail.appVersion || '—'}{'\n'}
                 {new Date(detail.testedAt).toLocaleString()}
               </Text>
@@ -221,6 +236,8 @@ const styles = StyleSheet.create({
   itemInfo: { flex: 1 },
   itemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   itemLabel: { fontSize: 15, fontWeight: 'bold' },
+  qcChip: { borderRadius: 10, paddingVertical: 2, paddingHorizontal: 8, marginLeft: 6 },
+  qcChipText: { fontSize: 10, fontWeight: 'bold' },
   itemPPM: { fontSize: 15, fontWeight: 'bold', color: '#1565C0' },
   itemSub: { color: '#546E7A', fontSize: 12, marginTop: 3 },
   itemMeta: { color: '#90A4AE', fontSize: 11, marginTop: 1 },

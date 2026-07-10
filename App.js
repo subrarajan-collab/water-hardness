@@ -8,7 +8,9 @@ import { StatusBar } from 'expo-status-bar';
 import { BoxConnectionProvider } from './src/context/BoxConnectionContext';
 import SetupScreen from './src/screens/SetupScreen';
 import CalibrationScreen from './src/screens/CalibrationScreen';
-import DeviceCalibrationScreen from './src/screens/DeviceCalibrationScreen';
+import FullCalibrationScreen from './src/screens/FullCalibrationScreen';
+import LinkBoxScreen from './src/screens/LinkBoxScreen';
+import AccuracyCheckScreen from './src/screens/AccuracyCheckScreen';
 import MeasurementScreen from './src/screens/MeasurementScreen';
 import ResultsScreen from './src/screens/ResultsScreen';
 
@@ -32,12 +34,22 @@ function CalibrationTabNavigator() {
       <CalibrationStack.Screen
         name="CalibrationHome"
         component={CalibrationScreen}
-        options={{ title: 'Master Curve' }}
+        options={{ title: 'Calibration' }}
       />
       <CalibrationStack.Screen
-        name="DeviceCalibration"
-        component={DeviceCalibrationScreen}
-        options={{ title: 'Calibrate This Box' }}
+        name="FullCalibration"
+        component={FullCalibrationScreen}
+        options={{ title: 'Full Calibration' }}
+      />
+      <CalibrationStack.Screen
+        name="LinkBox"
+        component={LinkBoxScreen}
+        options={{ title: 'Link Box' }}
+      />
+      <CalibrationStack.Screen
+        name="AccuracyCheck"
+        component={AccuracyCheckScreen}
+        options={{ title: 'Accuracy Check' }}
       />
     </CalibrationStack.Navigator>
   );

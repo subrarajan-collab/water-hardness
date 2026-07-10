@@ -144,7 +144,7 @@ export function fitDeviceFactor({ blankA, standardA, standardPpm, masterPoints }
   const aM0 = masterAbsorbanceAtPpm(0, masterPoints);
   const aM1 = masterAbsorbanceAtPpm(standardPpm, masterPoints);
   if (aM0 === null || aM1 === null || Math.abs(aM1 - aM0) < 1e-6) {
-    return { error: 'Master curve is missing or degenerate — build/import it first.' };
+    return { error: 'No calibration to link to — run a full calibration or import one first.' };
   }
   const m = (standardA - blankA) / (aM1 - aM0);
   const c = blankA - m * aM0;

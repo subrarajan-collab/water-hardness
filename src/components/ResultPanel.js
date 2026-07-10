@@ -1,202 +1,149 @@
 import React from 'react';
 import { View, Text, StyleSheet, Image } from 'react-native';
+import Accordion from './Accordion';
+import { classifyHardness, blankAgeText } from '../utils/readiness';
 
-// Small status-colour pill for a pass/fail gate — green ok / amber warn / red
-// fail, per the "consistent design" spec. Used for saturation, dark level,
-// and blank-freshness so the three gates read at a glance instead of prose.
-function GateBadge({ label, status }) {
-  // status: 'ok' | 'warn' | 'fail'
-  const color = status === 'ok' ? '#2E7D32' : status === 'warn' ? '#EF6C00' : '#C62828';
-  const bg = status === 'ok' ? '#E8F5E9' : status === 'warn' ? '#FFF3E0' : '#FFEBEE';
-  const icon = status === 'ok' ? '✓' : status === 'warn' ? '~' : '⚠';
-  return (
-    <View style={[gateStyles.pill, { backgroundColor: bg, borderColor: color }]}>
-      <Text style={[gateStyles.pillText, { color }]}>{icon} {label}</Text>
-    </View>
-  );
-}
-
-const gateStyles = StyleSheet.create({
-  pill: {
-    borderRadius: 20, borderWidth: 1, paddingVertical: 6, paddingHorizontal: 12,
-  },
-  pillText: { fontSize: 12, fontWeight: '700' },
-});
-
-// Computes the three gate verdicts from a result object (mirrors the
-// firmware's own gate thresholds: DARK_WARN=15, SAT_LIMIT_PCT=1%,
-// BLANK_STALE_S=24h) so the badges agree with what /measure actually
-// enforced.
+// Gate verdicts mirror the firmware's own thresholds (DARK_WARN=15,
+// SAT_LIMIT_PCT=1%, BLANK_STALE_S=24h) so what we display agrees with what
+// /measure actually enforced.
 export function gateVerdicts(result) {
   const satOk = (result.satFraction ?? 0) < 0.01;
   const dark = result.darkLevel;
   const darkOk = !dark || (dark.r <= 15 && dark.g <= 15 && dark.b <= 15);
   const age = result.blankAgeS;
   const blankOk = typeof age === 'number' && age >= 0 && age <= 86400;
-  const blankUnknown = typeof age !== 'number' || age < 0;
-  return {
-    saturation: satOk ? 'ok' : 'fail',
-    darkLevel: darkOk ? 'ok' : 'warn',
-    blankFresh: blankOk ? 'ok' : blankUnknown ? 'fail' : 'warn',
-  };
+  return { satOk, darkOk, blankOk };
 }
 
-// Shared "here's what a measurement produced" block, used inline on the
-// Measurement tab right after a run completes, and again in the Results tab
-// detail view for a saved history entry. Both call sites pass the same
-// shape: { result, hardnessPPM, label, deviceCalibrated, thumbUri }.
-export default function ResultPanel({ result, hardnessPPM, label, deviceCalibrated, thumbUri }) {
+// One plain-language line summarising measurement quality — the specific
+// problem and what to do about it, never a cause code.
+function gateLine(result) {
+  const { satOk, darkOk, blankOk } = gateVerdicts(result);
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  if (satOk && darkOk && blankOk && warnings.length === 0) {
+    return { text: '✓ Measurement clean', color: '#2E7D32' };
+  }
+  if (!satOk) return { text: '⚠ Too much light reached the sensor — re-run Set regions & exposure in Setup', color: '#C62828' };
+  if (!darkOk) return { text: '⚠ Outside light is leaking into the box — check the enclosure is fully closed', color: '#EF6C00' };
+  if (!blankOk) return { text: '⚠ Reference water is old — capture a new one, then measure again', color: '#EF6C00' };
+  return { text: `⚠ ${warnings[0]}`, color: '#EF6C00' };
+}
+
+// Shared result block. Primary = ppm (large) + hardness class chip + gate
+// line. Everything numeric/expert lives in the "Details" accordion.
+// When hardnessPPM is null the panel shows an explicit "not calibrated"
+// banner and promotes absorbance as the only number available.
+export default function ResultPanel({ result, hardnessPPM, deviceCalibrated, thumbUri, masterHash }) {
   if (!result) return null;
-  const gates = gateVerdicts(result);
+  const cls = classifyHardness(hardnessPPM);
+  const gate = gateLine(result);
+  const hasPpm = hardnessPPM !== null && hardnessPPM !== undefined;
 
   return (
     <View>
-      {Array.isArray(result.warnings) && result.warnings.length > 0 && (
-        <View style={styles.warnBanner}>
-          <Text style={styles.warnBannerTitle}>⚠ Box warnings</Text>
-          {result.warnings.map((w, i) => (
-            <Text key={i} style={styles.warnBannerText}>• {w}</Text>
-          ))}
-        </View>
-      )}
-
-      {result.frameCount > 1 && (
-        <View style={styles.avgBadge}>
-          <Text style={styles.avgBadgeText}>
-            📊 Averaged over {result.frameCount} frames
-            {result.rejectedFrames > 0 ? ` (${result.rejectedFrames} outlier${result.rejectedFrames > 1 ? 's' : ''} rejected)` : ''}
-          </Text>
-        </View>
-      )}
-
-      <View style={[styles.resultCard, { borderTopColor: label?.color || '#1565C0' }]}>
-        <View style={styles.swatchRow}>
-          <View style={[styles.swatch, { backgroundColor: `rgb(${result.r},${result.g},${result.b})` }]} />
-          <View style={styles.labelCol}>
-            <Text style={[styles.hardnessLabel, { color: label?.color }]}>{label?.label}</Text>
-            <Text style={styles.rangeText}>{label?.range} (estimated)</Text>
-            {typeof result.absorbance === 'number' && (
-              <Text style={styles.absPrimary}>A_blue = {result.absorbance.toFixed(3)}</Text>
-            )}
-            {hardnessPPM !== null && hardnessPPM !== undefined ? (
-              <>
-                <Text style={styles.ppmText}>{hardnessPPM} ppm CaCO₃</Text>
-                <Text style={styles.ppmSrc}>
-                  {deviceCalibrated ? 'master curve + device factor ✓' : 'master curve (no device factor)'}
-                </Text>
-              </>
-            ) : (
-              <Text style={styles.uncalText}>Add calibration points for ppm reading</Text>
-            )}
-          </View>
-        </View>
-      </View>
-
-      {/* Gate badges — the professional, at-a-glance replacement for prose */}
-      <View style={styles.gateRow}>
-        <GateBadge label="Saturation" status={gates.saturation} />
-        <GateBadge label="Dark level" status={gates.darkLevel} />
-        <GateBadge label="Blank fresh" status={gates.blankFresh} />
-      </View>
-
-      <View style={styles.metricsCard}>
-        <Text style={styles.metricsTitle}>Measurement</Text>
-
-        {(typeof result.absorbanceR === 'number' || typeof result.absorbanceG === 'number') && (
-          <View style={styles.metricRow}>
-            <Text style={styles.metricName}>A_red · A_green</Text>
-            <Text style={styles.metricValue}>
-              {typeof result.absorbanceR === 'number' ? result.absorbanceR.toFixed(3) : '—'}
-              {' · '}
-              {typeof result.absorbanceG === 'number' ? result.absorbanceG.toFixed(3) : '—'}
-            </Text>
-          </View>
-        )}
-
-        {typeof result.absorbanceStdDev === 'number' && (
+      {/* Primary reading */}
+      <View style={[styles.primaryCard, { borderTopColor: cls?.color || '#90A4AE' }]}>
+        {hasPpm ? (
           <>
-            <View style={styles.metricRow}>
-              <Text style={styles.metricName}>Stability (σ)</Text>
-              <Text style={[styles.metricValue, {
-                color: result.absorbanceStdDev < 0.01 ? '#2E7D32'
-                  : result.absorbanceStdDev < 0.03 ? '#EF6C00' : '#C62828',
-              }]}>
-                {result.absorbanceStdDev.toFixed(4)}
+            <View style={styles.ppmRow}>
+              <Text style={styles.ppmBig}>{hardnessPPM}</Text>
+              <Text style={styles.ppmUnit}> mg/L CaCO₃</Text>
+            </View>
+            {cls && (
+              <View style={[styles.classChip, { backgroundColor: cls.color }]}>
+                <Text style={styles.classChipText}>{cls.label} · {cls.range}</Text>
+              </View>
+            )}
+            {!deviceCalibrated && (
+              <Text style={styles.linkNote}>
+                Box not linked to the calibration — reading may be less accurate. Link it in the Calibration tab.
+              </Text>
+            )}
+          </>
+        ) : (
+          <>
+            <View style={styles.notCalBanner}>
+              <Text style={styles.notCalBannerText}>
+                Not calibrated — no ppm. Showing light absorbance only.{'\n'}
+                Run a calibration in the Calibration tab to get hardness readings.
               </Text>
             </View>
-            <View style={styles.barBg}>
-              <View style={[styles.barFill, {
-                width: `${Math.min(100, (result.absorbanceStdDev / 0.06) * 100)}%`,
-                backgroundColor: result.absorbanceStdDev < 0.01 ? '#2E7D32' : result.absorbanceStdDev < 0.03 ? '#EF6C00' : '#C62828',
-              }]} />
+            <View style={styles.ppmRow}>
+              <Text style={styles.ppmBig}>
+                {typeof result.absorbance === 'number' ? result.absorbance.toFixed(3) : '—'}
+              </Text>
+              <Text style={styles.ppmUnit}> absorbance</Text>
             </View>
           </>
         )}
-
-        <View style={styles.rgbRow}>
-          {[['R', result.r, '#EF5350'], ['G', result.g, '#66BB6A'], ['B', result.b, '#42A5F5']].map(([ch, val, col]) => (
-            <View key={ch} style={styles.rgbItem}>
-              <View style={[styles.rgbDot, { backgroundColor: col }]} />
-              <Text style={styles.rgbLabel}>{ch}</Text>
-              <Text style={styles.rgbVal}>{val}</Text>
-            </View>
-          ))}
-        </View>
+        <Text style={[styles.gateLine, { color: gate.color }]}>{gate.text}</Text>
       </View>
 
-      {thumbUri && (
-        <View style={styles.previewCard}>
-          <Text style={styles.metricsTitle}>Box view</Text>
+      {/* Expert details, tucked away */}
+      <Accordion title="Details">
+        <Row name="Absorbance (blue)" value={fmt(result.absorbance, 3)} />
+        <Row name="Absorbance (red · green)" value={`${fmt(result.absorbanceR, 3)} · ${fmt(result.absorbanceG, 3)}`} />
+        <Row name="Repeatability (σ)" value={fmt(result.absorbanceStdDev, 4)} />
+        <Row
+          name="Frames used"
+          value={result.frameCount != null
+            ? `${result.frameCount}${result.rejectedFrames ? ` (${result.rejectedFrames} rejected)` : ''}`
+            : '—'}
+        />
+        <Row name="Sample colour (R/G/B)" value={`${result.r} / ${result.g} / ${result.b}`} />
+        <Row name="Sensor clipping" value={`${((result.satFraction ?? 0) * 100).toFixed(2)}%`} />
+        {result.darkLevel && (
+          <Row name="Dark level (R/G/B)" value={`${fmt(result.darkLevel.r, 0)} / ${fmt(result.darkLevel.g, 0)} / ${fmt(result.darkLevel.b, 0)}`} />
+        )}
+        <Row name="Reference water age" value={blankAgeText(result.blankAgeS)} />
+        {masterHash && <Row name="Calibration version" value={masterHash} />}
+        {Array.isArray(result.warnings) && result.warnings.length > 0 && (
+          <Text style={styles.warnList}>Warnings: {result.warnings.join(' · ')}</Text>
+        )}
+        {thumbUri && (
           <Image source={{ uri: thumbUri }} style={styles.preview} resizeMode="cover" />
-        </View>
-      )}
+        )}
+      </Accordion>
+    </View>
+  );
+}
+
+function fmt(v, d) {
+  return typeof v === 'number' ? v.toFixed(d) : '—';
+}
+
+function Row({ name, value }) {
+  return (
+    <View style={styles.metricRow}>
+      <Text style={styles.metricName}>{name}</Text>
+      <Text style={styles.metricValue}>{value}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  warnBanner: {
-    backgroundColor: '#FFEBEE', borderRadius: 10, padding: 12,
-    marginBottom: 14, borderLeftWidth: 4, borderLeftColor: '#C62828',
+  primaryCard: {
+    backgroundColor: '#FFF', borderRadius: 16, padding: 22,
+    marginBottom: 16, elevation: 3, borderTopWidth: 4, alignItems: 'center',
   },
-  warnBannerTitle: { color: '#B71C1C', fontSize: 13, fontWeight: 'bold', marginBottom: 4 },
-  warnBannerText: { color: '#B71C1C', fontSize: 12, lineHeight: 17 },
+  ppmRow: { flexDirection: 'row', alignItems: 'baseline' },
+  ppmBig: { fontSize: 52, fontWeight: 'bold', color: '#1A237E' },
+  ppmUnit: { fontSize: 15, color: '#78909C', fontWeight: '600' },
+  classChip: { borderRadius: 20, paddingVertical: 7, paddingHorizontal: 16, marginTop: 10 },
+  classChipText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
+  linkNote: { color: '#EF6C00', fontSize: 12, marginTop: 10, textAlign: 'center', lineHeight: 17 },
 
-  avgBadge: {
-    backgroundColor: '#E8F5E9', borderRadius: 10, padding: 10,
-    marginBottom: 14, borderLeftWidth: 4, borderLeftColor: '#2E7D32',
+  notCalBanner: {
+    backgroundColor: '#FFF3E0', borderRadius: 10, padding: 12, marginBottom: 12,
+    borderLeftWidth: 4, borderLeftColor: '#EF6C00', alignSelf: 'stretch',
   },
-  avgBadgeText: { color: '#2E7D32', fontSize: 13, fontWeight: '600' },
+  notCalBannerText: { color: '#E65100', fontSize: 13, lineHeight: 19, fontWeight: '600' },
 
-  resultCard: {
-    backgroundColor: '#FFF', borderRadius: 16, padding: 20,
-    marginBottom: 14, elevation: 3, borderTopWidth: 4,
-  },
-  swatchRow: { flexDirection: 'row', alignItems: 'center' },
-  swatch: { width: 70, height: 70, borderRadius: 35, marginRight: 20, elevation: 2 },
-  labelCol: { flex: 1 },
-  hardnessLabel: { fontSize: 22, fontWeight: 'bold' },
-  rangeText: { color: '#78909C', fontSize: 13, marginTop: 2 },
-  absPrimary: { color: '#6A1B9A', fontSize: 20, fontWeight: 'bold', marginTop: 4 },
-  ppmText: { color: '#1565C0', fontSize: 16, fontWeight: 'bold', marginTop: 4 },
-  ppmSrc: { color: '#78909C', fontSize: 11, marginTop: 1 },
-  uncalText: { color: '#EF6C00', fontSize: 12, marginTop: 4, fontStyle: 'italic' },
+  gateLine: { fontSize: 13, fontWeight: '700', marginTop: 14, textAlign: 'center' },
 
-  gateRow: { flexDirection: 'row', gap: 8, marginBottom: 14, flexWrap: 'wrap' },
-
-  metricsCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 20, marginBottom: 14, elevation: 2 },
-  metricsTitle: { fontSize: 15, fontWeight: 'bold', color: '#1565C0', marginBottom: 14 },
-  metricRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  metricRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 7 },
   metricName: { color: '#546E7A', fontSize: 13 },
   metricValue: { color: '#1A237E', fontSize: 13, fontWeight: 'bold' },
-  barBg: { height: 10, backgroundColor: '#E3F2FD', borderRadius: 5, marginBottom: 14, overflow: 'hidden' },
-  barFill: { height: '100%', borderRadius: 5 },
-  rgbRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 4 },
-  rgbItem: { alignItems: 'center', gap: 4 },
-  rgbDot: { width: 16, height: 16, borderRadius: 8 },
-  rgbLabel: { color: '#78909C', fontSize: 11 },
-  rgbVal: { color: '#1A237E', fontSize: 16, fontWeight: 'bold' },
-
-  previewCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, marginBottom: 14, elevation: 2 },
-  preview: { width: '100%', height: 160, borderRadius: 8, marginTop: 8, backgroundColor: '#F0F0F0' },
+  warnList: { color: '#EF6C00', fontSize: 12, marginTop: 6 },
+  preview: { width: '100%', height: 150, borderRadius: 8, marginTop: 12, backgroundColor: '#F0F0F0' },
 });

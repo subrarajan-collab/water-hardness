@@ -7,8 +7,14 @@ import {
   thumbUrl, postConfig, postBlank, postAutotune, getLedTest, createCancelToken,
   DEFAULT_IP, validateConfigValues, DEFAULT_CONFIG, CONFIG_LIMITS,
 } from '../api/boxClient';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useBoxConnection } from '../context/BoxConnectionContext';
 import DebugPanel from '../components/DebugPanel';
+
+// Onboarding step "Set regions & exposure" is marked complete the first time
+// either Save-to-box or Auto-tune succeeds (read by the Measurement tab).
+const SETUP_DONE_KEY = 'setup_done';
+const markSetupDone = () => AsyncStorage.setItem(SETUP_DONE_KEY, '1').catch(() => {});
 
 const PREVIEW_W = 300;
 const PREVIEW_H = 225;
@@ -135,6 +141,7 @@ export default function SetupScreen() {
       const r = await postAutotune(ip);
       setAecValue(r.aec_value);
       setTuneResult(r);
+      markSetupDone();
     } catch (e) {
       Alert.alert(alertTitleFor(e), e.message || 'Auto-tune failed.');
     } finally {
@@ -189,6 +196,7 @@ export default function SetupScreen() {
     try {
       await postConfig(ip, { roi, patchA, patchB, aec_value: aecValue, agc_gain: agcGain, r_gain: rGain, b_gain: bGain });
       await refresh();
+      markSetupDone();
       Alert.alert('Saved ✓', 'Settings sent to the box.');
     } catch (e) {
       Alert.alert(alertTitleFor(e), e.message || 'Could not save.');
@@ -215,8 +223,8 @@ export default function SetupScreen() {
   // ── Capture blank ──────────────────────────────────────────────────────────
   const captureBlank = () => {
     Alert.alert(
-      'Capture blank',
-      'Make sure the reagent BLANK (zero-hardness sample) is in place, panel is on, nothing else in the beam. Continue?',
+      'Capture reference water',
+      'Reference water = distilled water (0 ppm) with reagent added. Make sure it is in the box, the panel is on, and nothing else is in the beam. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Capture', onPress: doCaptureBlank },
@@ -229,9 +237,9 @@ export default function SetupScreen() {
     try {
       const r = await postBlank(ip, { signal: token.signal });
       await refresh();
-      Alert.alert('Blank captured ✓', `ROI net blue ${r.roi_net?.b?.toFixed?.(1) ?? '—'}.`);
+      Alert.alert('Reference water captured ✓', 'You can measure samples now.');
     } catch (e) {
-      Alert.alert(alertTitleFor(e), e.message || 'Blank capture failed.');
+      Alert.alert(alertTitleFor(e), e.message || 'Could not capture the reference water.');
     } finally {
       setBlanking(false);
     }
@@ -369,10 +377,14 @@ export default function SetupScreen() {
 
       {/* Blank card */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Blank</Text>
-        <Text style={styles.metaText}>Blank age: {ageText(status?.blank_age_s)}</Text>
+        <Text style={styles.cardTitle}>Reference water (0 ppm)</Text>
+        <Text style={styles.tooltipText}>
+          The zero point every reading is compared against: distilled water with reagent added.
+          Recapture it daily and whenever the box is moved.
+        </Text>
+        <Text style={styles.metaText}>Last captured: {ageText(status?.blank_age_s)}</Text>
         <TouchableOpacity style={[styles.tealBtn, blanking && styles.btnDisabled]} onPress={captureBlank} disabled={blanking}>
-          {blanking ? <ActivityIndicator color="#FFF" /> : <Text style={styles.primaryBtnText}>🧪 Capture Blank</Text>}
+          {blanking ? <ActivityIndicator color="#FFF" /> : <Text style={styles.primaryBtnText}>🧪 Capture reference water</Text>}
         </TouchableOpacity>
       </View>
 
@@ -428,6 +440,7 @@ const styles = StyleSheet.create({
   errText: { color: '#E65100', fontSize: 13, lineHeight: 19 },
 
   metaText: { color: '#546E7A', fontSize: 13, lineHeight: 19 },
+  tooltipText: { color: '#78909C', fontSize: 12, lineHeight: 17, marginBottom: 8, fontStyle: 'italic' },
   errInlineText: { color: '#C62828', fontSize: 12, marginTop: 8, fontWeight: '600' },
   warnInlineText: { color: '#EF6C00', fontSize: 12, marginTop: 8, fontWeight: '600' },
   rowSmall: { flexDirection: 'row', gap: 16, marginTop: 10 },
