@@ -8,8 +8,10 @@ void configSetDefaults(Settings& s) {
   s.roi    = { 0.42f, 0.30f, 0.16f, 0.40f };
   s.patchA = { 0.14f, 0.44f, 0.10f, 0.12f };
   s.patchB = { 0.76f, 0.44f, 0.10f, 0.12f };
-  s.aec_value = 300;      // fixed exposure (0..1200 typ.)
-  s.agc_gain  = 0;        // fixed gain (0 = 1x)
+  s.aec_value = 300;      // fixed exposure (1..1200)
+  s.agc_gain  = 2;        // fixed gain (0..30)
+  s.r_gain    = 1.0f;     // manual WB: neutral until tuned against the diffuser
+  s.b_gain    = 1.0f;
   s.frame_count = 13;
   s.settle_ms = 2000;
   s.interval_ms = 1000;

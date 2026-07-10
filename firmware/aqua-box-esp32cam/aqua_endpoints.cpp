@@ -4,6 +4,7 @@
 #include "aqua_measure.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
+#include <math.h>
 
 static httpd_handle_t s_server = nullptr;
 
@@ -17,10 +18,23 @@ static esp_err_t sendJson(httpd_req_t* req, const String& body) {
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_send(req, body.c_str(), body.length());
 }
+// Same as sendJson but with a non-200 HTTP status — used by /config to
+// reject out-of-range values (Bug 2) with a real 400, not a silent clamp.
+static esp_err_t sendJsonStatus(httpd_req_t* req, int status, const char* statusText, const String& body) {
+  cors(req);
+  httpd_resp_set_type(req, "application/json");
+  char statusStr[24];
+  snprintf(statusStr, sizeof(statusStr), "%d %s", status, statusText);
+  httpd_resp_set_status(req, statusStr);
+  return httpd_resp_send(req, body.c_str(), body.length());
+}
 
 static String rectJson(const RectN& r) {
   return "{\"x\":" + String(r.x,4) + ",\"y\":" + String(r.y,4) +
          ",\"w\":" + String(r.w,4) + ",\"h\":" + String(r.h,4) + "}";
+}
+static String chanJson(const ChannelMeans& c, int decimals = 1) {
+  return "{\"r\":" + String(c.r, decimals) + ",\"g\":" + String(c.g, decimals) + ",\"b\":" + String(c.b, decimals) + "}";
 }
 
 // ─── GET /ping ────────────────────────────────────────────────────────────────
@@ -44,6 +58,8 @@ static esp_err_t hStatus(httpd_req_t* req) {
   j +=   "\"patchB\":" + rectJson(g_settings.patchB) + ",";
   j +=   "\"aec_value\":" + String(g_settings.aec_value) + ",";
   j +=   "\"agc_gain\":" + String(g_settings.agc_gain) + ",";
+  j +=   "\"r_gain\":" + String(g_settings.r_gain, 3) + ",";
+  j +=   "\"b_gain\":" + String(g_settings.b_gain, 3) + ",";
   j +=   "\"frame_count\":" + String(g_settings.frame_count) + ",";
   j +=   "\"settle_ms\":" + String(g_settings.settle_ms) + ",";
   j +=   "\"interval_ms\":" + String(g_settings.interval_ms) + ",";
@@ -55,17 +71,97 @@ static esp_err_t hStatus(httpd_req_t* req) {
 }
 
 // ─── GET /probe ──────────────────────────────────────────────────────────────
+// Brightness guidance is driven by the ROI's MAX-CHANNEL p99, not the mean
+// (Bug 1b). A small hot/clipped patch barely moves the mean but pushes p99
+// to 255 well before the picture "looks" bright on average — that mismatch
+// is exactly what produced the old screen's contradictory "too dark" +
+// "78% saturated" readout at the same time.
 static esp_err_t hProbe(httpd_req_t* req) {
   ledOn();  cameraDiscard(g_settings.discard_frames);
   RegionResult lit; cameraRegions(lit);
   ledOff(); cameraDiscard(g_settings.discard_frames);
   RegionResult dark; cameraRegions(dark);
+
+  float maxP99 = lit.roiP99.r;
+  if (lit.roiP99.g > maxP99) maxP99 = lit.roiP99.g;
+  if (lit.roiP99.b > maxP99) maxP99 = lit.roiP99.b;
+
+  const char* verdict;
+  if (lit.roiSatPct > 1.0f) verdict = "clipping";
+  else if (maxP99 < 180.0f) verdict = "dark";
+  else if (maxP99 > 245.0f) verdict = "bright";
+  else verdict = "ok";
+
   String j = "{\"ok\":true,";
-  j += "\"roi\":{\"r\":" + String(lit.roi.r,2) + ",\"g\":" + String(lit.roi.g,2) + ",\"b\":" + String(lit.roi.b,2) + "},";
-  j += "\"patchA\":{\"r\":" + String(lit.patchA.r,2) + ",\"g\":" + String(lit.patchA.g,2) + ",\"b\":" + String(lit.patchA.b,2) + "},";
-  j += "\"patchB\":{\"r\":" + String(lit.patchB.r,2) + ",\"g\":" + String(lit.patchB.g,2) + ",\"b\":" + String(lit.patchB.b,2) + "},";
+  j += "\"roi\":" + chanJson(lit.roi, 2) + ",";
+  j += "\"roi_p99\":" + chanJson(lit.roiP99, 1) + ",";
+  j += "\"roi_p99_max\":" + String(maxP99, 1) + ",";
+  j += "\"verdict\":\"" + String(verdict) + "\",";
+  j += "\"patchA\":" + chanJson(lit.patchA, 2) + ",";
+  j += "\"patchB\":" + chanJson(lit.patchB, 2) + ",";
   j += "\"roi_saturation_pct\":" + String(lit.roiSatPct,2) + ",";
-  j += "\"dark_level\":{\"r\":" + String(dark.roi.r,2) + ",\"g\":" + String(dark.roi.g,2) + ",\"b\":" + String(dark.roi.b,2) + "}}";
+  j += "\"dark_level\":" + chanJson(dark.roi, 2) + "}";
+  return sendJson(req, j);
+}
+
+// ─── POST /autotune ──────────────────────────────────────────────────────────
+// Binary-searches aec_value (gain held fixed) until ROI max-channel p99 sits
+// in [200,230]. Replaces manual +/- guesswork entirely (Bug 1c).
+static esp_err_t hAutotune(httpd_req_t* req) {
+  ledOn();
+  cameraDiscard(g_settings.discard_frames);
+  int foundAec = g_settings.aec_value;
+  ChannelMeans p99;
+  bool ok = cameraAutoTuneExposure(foundAec, p99);
+  ledOff();
+
+  if (!ok) {
+    return sendJson(req, "{\"ok\":false,\"error\":\"autotune failed — capture error during search\"}");
+  }
+
+  g_settings.aec_value = foundAec;
+  configSave();
+  cameraApplyLock();
+  cameraDiscard(g_settings.discard_frames);
+
+  float maxP99 = p99.r;
+  if (p99.g > maxP99) maxP99 = p99.g;
+  if (p99.b > maxP99) maxP99 = p99.b;
+  bool inBand = maxP99 >= 200.0f && maxP99 <= 230.0f;
+
+  String j = "{\"ok\":true,";
+  j += "\"aec_value\":" + String(foundAec) + ",";
+  j += "\"agc_gain\":" + String(g_settings.agc_gain) + ",";
+  j += "\"roi_p99\":" + chanJson(p99, 1) + ",";
+  j += "\"roi_p99_max\":" + String(maxP99, 1) + ",";
+  j += "\"in_band\":" + String(inBand ? "true" : "false") + "}";
+  return sendJson(req, j);
+}
+
+// ─── GET /ledtest ─────────────────────────────────────────────────────────────
+// Captures ROI mean with LED off, then on. A near-zero delta means the LED
+// isn't actually illuminating the sample — distinguishes "LED dead/unplugged"
+// from "exposure/gain badly configured" (Bug 3), which otherwise both look
+// like "dark image" to the user.
+#define LED_TEST_DELTA_THRESHOLD 8.0f
+static esp_err_t hLedTest(httpd_req_t* req) {
+  ChannelMeans off, on;
+  if (!cameraLedTest(off, on)) {
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "capture failed");
+  }
+  float dr = on.r - off.r, dg = on.g - off.g, db = on.b - off.b;
+  float maxDelta = dr; if (dg > maxDelta) maxDelta = dg; if (db > maxDelta) maxDelta = db;
+  bool responding = maxDelta > LED_TEST_DELTA_THRESHOLD;
+
+  String j = "{\"ok\":true,";
+  j += "\"led_off\":" + chanJson(off, 1) + ",";
+  j += "\"led_on\":" + chanJson(on, 1) + ",";
+  j += "\"delta\":" + String(maxDelta, 1) + ",";
+  j += "\"responding\":" + String(responding ? "true" : "false");
+  if (!responding) {
+    j += ",\"error\":\"LED not responding — check wiring/power\"";
+  }
+  j += "}";
   return sendJson(req, j);
 }
 
@@ -105,6 +201,9 @@ static float jNum(const String& s, const char* key, float def) {
   if (c < 0) return def;
   return s.substring(c + 1).toFloat();
 }
+static bool jHasKey(const String& s, const char* key) {
+  return s.indexOf(String("\"") + key + "\"") >= 0;
+}
 static bool jRect(const String& s, const char* key, RectN& out) {
   int k = s.indexOf(String("\"") + key + "\"");
   if (k < 0) return false;
@@ -117,18 +216,46 @@ static bool jRect(const String& s, const char* key, RectN& out) {
 }
 
 // ─── POST /config ────────────────────────────────────────────────────────────
+// Bug 2 fix: validate every field on a COPY of the settings first; if
+// anything is out of range, reject the whole request with 400 + a message
+// naming the field, and change nothing. Only commit + apply if everything
+// passes. This is what stops "exposure/gain 0" (or any other typo) from
+// ever reaching the sensor and producing a black/broken image.
 static esp_err_t hConfig(httpd_req_t* req) {
   String body;
   if (!readBody(req, body)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body");
-  jRect(body, "roi", g_settings.roi);
-  jRect(body, "patchA", g_settings.patchA);
-  jRect(body, "patchB", g_settings.patchB);
-  g_settings.aec_value = (int)jNum(body, "aec_value", g_settings.aec_value);
-  g_settings.agc_gain  = (int)jNum(body, "agc_gain",  g_settings.agc_gain);
-  g_settings.frame_count = (int)jNum(body, "frame_count", g_settings.frame_count);
-  g_settings.settle_ms   = (int)jNum(body, "settle_ms",   g_settings.settle_ms);
-  g_settings.interval_ms = (int)jNum(body, "interval_ms", g_settings.interval_ms);
-  g_settings.discard_frames = (int)jNum(body, "discard_frames", g_settings.discard_frames);
+
+  Settings tmp = g_settings;
+  jRect(body, "roi", tmp.roi);
+  jRect(body, "patchA", tmp.patchA);
+  jRect(body, "patchB", tmp.patchB);
+  if (jHasKey(body, "aec_value"))     tmp.aec_value = (int)jNum(body, "aec_value", tmp.aec_value);
+  if (jHasKey(body, "agc_gain"))      tmp.agc_gain  = (int)jNum(body, "agc_gain",  tmp.agc_gain);
+  if (jHasKey(body, "r_gain"))        tmp.r_gain    = jNum(body, "r_gain", tmp.r_gain);
+  if (jHasKey(body, "b_gain"))        tmp.b_gain    = jNum(body, "b_gain", tmp.b_gain);
+  if (jHasKey(body, "frame_count"))   tmp.frame_count = (int)jNum(body, "frame_count", tmp.frame_count);
+  if (jHasKey(body, "settle_ms"))     tmp.settle_ms   = (int)jNum(body, "settle_ms",   tmp.settle_ms);
+  if (jHasKey(body, "interval_ms"))   tmp.interval_ms = (int)jNum(body, "interval_ms", tmp.interval_ms);
+  if (jHasKey(body, "discard_frames")) tmp.discard_frames = (int)jNum(body, "discard_frames", tmp.discard_frames);
+
+  if (tmp.aec_value < 1 || tmp.aec_value > 1200) {
+    return sendJsonStatus(req, 400, "Bad Request",
+      "{\"ok\":false,\"error\":\"aec_value must be 1-1200 (got " + String(tmp.aec_value) + ")\"}");
+  }
+  if (tmp.agc_gain < 0 || tmp.agc_gain > 30) {
+    return sendJsonStatus(req, 400, "Bad Request",
+      "{\"ok\":false,\"error\":\"agc_gain must be 0-30 (got " + String(tmp.agc_gain) + ")\"}");
+  }
+  if (tmp.r_gain <= 0 || tmp.r_gain > 8 || tmp.b_gain <= 0 || tmp.b_gain > 8) {
+    return sendJsonStatus(req, 400, "Bad Request",
+      "{\"ok\":false,\"error\":\"r_gain/b_gain must be > 0 and <= 8\"}");
+  }
+  if (tmp.frame_count < 1 || tmp.frame_count > 32) {
+    return sendJsonStatus(req, 400, "Bad Request",
+      "{\"ok\":false,\"error\":\"frame_count must be 1-32\"}");
+  }
+
+  g_settings = tmp;
   configSave();
   cameraApplyLock();                 // re-apply exposure/gain
   cameraDiscard(g_settings.discard_frames);   // discard after setting change
@@ -148,7 +275,7 @@ static esp_err_t hOptions(httpd_req_t* req) {
 
 void startWebServer() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-  // Comfortable headroom above the 11 routes below (ESP-IDF's own default is
+  // Comfortable headroom above the routes below (ESP-IDF's own default is
   // only 8 and silently drops anything past it — always set this explicitly).
   cfg.max_uri_handlers = 20;
   cfg.recv_wait_timeout = 30;   // seconds — measure body is short but sequence is long
@@ -174,6 +301,8 @@ void startWebServer() {
   reg("/ping",      HTTP_GET,  hPing);
   reg("/status",    HTTP_GET,  hStatus);
   reg("/probe",     HTTP_GET,  hProbe);
+  reg("/autotune",  HTTP_POST, hAutotune);
+  reg("/ledtest",   HTTP_GET,  hLedTest);
   reg("/thumb.jpg", HTTP_GET,  hThumb);
   reg("/config",    HTTP_POST, hConfig);
   reg("/blank",     HTTP_POST, hBlank);
@@ -182,5 +311,6 @@ void startWebServer() {
   reg("/config",    HTTP_OPTIONS, hOptions);
   reg("/blank",     HTTP_OPTIONS, hOptions);
   reg("/measure",   HTTP_OPTIONS, hOptions);
+  reg("/autotune",  HTTP_OPTIONS, hOptions);
   Serial.printf("Routes: %d registered, %d failed\n", registered, failed);
 }

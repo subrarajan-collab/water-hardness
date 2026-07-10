@@ -2,7 +2,7 @@
 #include <Arduino.h>
 
 // ─── Firmware identity ───────────────────────────────────────────────────────
-#define FW_VERSION "1.1.0"
+#define FW_VERSION "1.2.0"
 #define DEVICE_TYPE "esp32cam"
 #define AP_SSID     "AQUA-BOX"
 
@@ -11,7 +11,9 @@
 // this against its own expected value on /ping and warns on mismatch — this
 // is what actually catches "box is running stale firmware" instead of the
 // symptom (a 404) with no explanation.
-#define API_VERSION 1
+// v2: added r_gain/b_gain (manual WB), roi_p99 in /probe, POST /autotune,
+//     GET /ledtest, /config now validates and rejects out-of-range values.
+#define API_VERSION 2
 
 // ─── AI-Thinker ESP32-CAM pin map ────────────────────────────────────────────
 #define PWDN_GPIO_NUM   32
@@ -48,6 +50,8 @@ struct Settings {
   RectN patchB;
   int   aec_value;      // fixed exposure
   int   agc_gain;       // fixed gain
+  float r_gain;         // manual white balance: red channel digital gain
+  float b_gain;         // manual white balance: blue channel digital gain
   int   frame_count;    // measurement frames (default 13)
   int   settle_ms;      // settle after first LED-on (default 2000)
   int   interval_ms;    // between measurement frames (default 1000)
