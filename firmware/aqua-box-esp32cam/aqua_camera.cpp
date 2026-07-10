@@ -11,7 +11,16 @@ void ledOn()  { digitalWrite(LED_GPIO_NUM, HIGH); }
 void ledOff() { digitalWrite(LED_GPIO_NUM, LOW); }
 
 // ─── Camera init: QVGA RGB565, locked linear pipeline ────────────────────────
+// Frame buffers prefer PSRAM (needed for fb_count=2 + CAMERA_GRAB_LATEST).
+// If PSRAM isn't actually available, requesting CAMERA_FB_IN_PSRAM anyway
+// leads the camera driver to allocate a frame-ready queue that never gets
+// wired up correctly, and the first frame ISR asserts into a null queue
+// (xQueueGenericSendFromISR) -> crash -> watchdog reboot loop. Detect PSRAM
+// explicitly and fall back to a single DRAM buffer instead of crashing.
 bool cameraInit() {
+  bool psram = psramFound();
+  Serial.printf("PSRAM: %s\n", psram ? "found" : "NOT FOUND (falling back to DRAM, 1 frame buffer)");
+
   camera_config_t c;
   c.ledc_channel = LEDC_CHANNEL_0;
   c.ledc_timer   = LEDC_TIMER_0;
@@ -26,9 +35,14 @@ bool cameraInit() {
   c.xclk_freq_hz = 20000000;
   c.pixel_format = PIXFORMAT_RGB565;      // linear pixels for absorbance
   c.frame_size   = FRAMESIZE_QVGA;        // 320x240
-  c.fb_count     = 2;
-  c.fb_location  = CAMERA_FB_IN_PSRAM;
   c.grab_mode    = CAMERA_GRAB_LATEST;
+  if (psram) {
+    c.fb_count    = 2;
+    c.fb_location = CAMERA_FB_IN_PSRAM;
+  } else {
+    c.fb_count    = 1;
+    c.fb_location = CAMERA_FB_IN_DRAM;
+  }
 
   esp_err_t err = esp_camera_init(&c);
   if (err != ESP_OK) {
