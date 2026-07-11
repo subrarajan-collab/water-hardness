@@ -253,8 +253,11 @@ export default function SetupScreen() {
   if (!connected) {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <View style={styles.logoWrap}>
+          <Image source={require('../../assets/inphoton-logo.png')} style={styles.logo} resizeMode="contain" />
+          <Text style={styles.logoSub}>Aqua — Water Hardness Tester</Text>
+        </View>
         <View style={styles.infoCard}>
-          <Text style={styles.infoTitle}>💧 AQUA-BOX Water Hardness Tester</Text>
           <Text style={styles.infoText}>
             Power the box, join its WiFi network “AQUA-BOX” on this phone, then connect.
             The box is at {DEFAULT_IP} by default.
@@ -286,6 +289,9 @@ export default function SetupScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.logoWrapSmall}>
+        <Image source={require('../../assets/inphoton-logo.png')} style={styles.logoSmall} resizeMode="contain" />
+      </View>
 
       {/* Connection card */}
       <TouchableOpacity style={styles.card} onLongPress={() => setDebugVisible(true)} delayLongPress={500} activeOpacity={0.85}>
@@ -436,6 +442,11 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4, borderLeftColor: '#3949AB',
   },
   infoTitle: { fontWeight: 'bold', color: '#3949AB', marginBottom: 6, fontSize: 16 },
+  logoWrap: { alignItems: 'center', backgroundColor: '#FFF', borderRadius: 16, paddingVertical: 22, marginBottom: 16, elevation: 2 },
+  logo: { width: 240, height: 68 },
+  logoSub: { color: '#546E7A', fontSize: 13, marginTop: 6, fontWeight: '600' },
+  logoWrapSmall: { alignItems: 'center', marginBottom: 12 },
+  logoSmall: { width: 160, height: 44 },
   infoText: { color: '#37474F', fontSize: 13, lineHeight: 19 },
 
   card: { backgroundColor: '#FFF', borderRadius: 16, padding: 18, marginBottom: 16, elevation: 2 },
