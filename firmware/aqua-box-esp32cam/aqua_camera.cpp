@@ -51,8 +51,24 @@ bool cameraInit() {
     Serial.printf("camera init failed 0x%x\n", err);
     return false;
   }
+  Serial.printf("camera sensor: %s\n", cameraSensorName());
   cameraApplyLock();
   return true;
+}
+
+// The driver supports several sensors on the same board; the pipeline here
+// is sensor-agnostic (QVGA RGB565 + the generic sensor_t control API works
+// on all of them), but knowing WHICH sensor a given box carries matters for
+// fleet traceability — it's reported in /status and the boot log.
+const char* cameraSensorName() {
+  sensor_t* s = esp_camera_sensor_get();
+  if (!s) return "unknown";
+  switch (s->id.PID) {
+    case OV2640_PID: return "OV2640";
+    case OV3660_PID: return "OV3660";
+    case OV5640_PID: return "OV5640";
+    default: return "unknown";
+  }
 }
 
 // Lock every automatic/non-linear stage so pixel value ∝ light intensity.

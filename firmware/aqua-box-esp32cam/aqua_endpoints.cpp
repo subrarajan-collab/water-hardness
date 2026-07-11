@@ -51,6 +51,7 @@ static esp_err_t hStatus(httpd_req_t* req) {
   String j = "{\"device_type\":\"" DEVICE_TYPE "\",\"fw_version\":\"" FW_VERSION "\",";
   j += "\"api_version\":" + String(API_VERSION) + ",";
   j += "\"box_id\":\"" + g_boxId + "\",";
+  j += "\"sensor\":\"" + String(cameraSensorName()) + "\",";
   j += "\"capabilities\":{\"preview\":true},";
   j += "\"settings\":{";
   j +=   "\"roi\":" + rectJson(g_settings.roi) + ",";

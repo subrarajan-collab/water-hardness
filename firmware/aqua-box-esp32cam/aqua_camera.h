@@ -15,6 +15,7 @@ struct RegionResult {
 };
 
 bool cameraInit();
+const char* cameraSensorName();  // "OV2640" / "OV3660" / "OV5640" / "unknown"
 void cameraApplyLock();          // apply the locked, linear pipeline from g_settings
 void cameraDiscard(int n);       // grab+return n frames (after any setting/LED change)
 bool cameraRegions(RegionResult& out);   // one frame → ROI + patch means (+p99 +sat)
