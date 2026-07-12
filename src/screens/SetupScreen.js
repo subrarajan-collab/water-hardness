@@ -1,15 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Image, PanResponder,
-  Alert, ActivityIndicator, ScrollView,
+  Alert, ActivityIndicator, ScrollView, Share,
 } from 'react-native';
 import {
-  thumbUrl, postConfig, postBlank, postAutotune, getLedTest, createCancelToken,
+  thumbUrl, postConfig, postBlank, postAutotune, getLedTest, getProbe, createCancelToken,
   DEFAULT_IP, validateConfigValues, DEFAULT_CONFIG, CONFIG_LIMITS,
 } from '../api/boxClient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useBoxConnection } from '../context/BoxConnectionContext';
 import DebugPanel from '../components/DebugPanel';
+import {
+  makeProbeRecord, appendProbe, loadProbeLog, clearProbeLog,
+  setReference, loadReference, clearReference, computeReferenceA,
+  settingsSignature, probeLogToCsv,
+} from '../utils/probeLog';
 
 // Onboarding step "Set regions & exposure" is marked complete the first time
 // either Save-to-box or Auto-tune succeeds (read by the Measurement tab).
@@ -100,6 +105,31 @@ export default function SetupScreen() {
   const [tuneResult, setTuneResult] = useState(null);
   const [blanking, setBlanking] = useState(false);
 
+  // Live probe readout + quick-compare reference
+  const [probe, setProbe] = useState(null);       // last /probe {roi,sat,...}
+  const [probing, setProbing] = useState(false);
+  const [reference, setReferenceState] = useState(null); // stored ref record
+  const [probeLog, setProbeLog] = useState([]);
+  const [showProbes, setShowProbes] = useState(false);
+
+  // Current settings signature — reference is only valid if it matches.
+  const currentSig = settingsSignature({ aec_value: aecValue, agc_gain: agcGain, r_gain: rGain, b_gain: bGain });
+  const refValid = reference && reference.sig === currentSig;
+
+  useEffect(() => {
+    loadReference().then(setReferenceState).catch(() => {});
+    loadProbeLog().then(setProbeLog).catch(() => {});
+  }, []);
+
+  // Central handler: any probe response (from Refresh / auto-tune / LED test)
+  // updates the live readout and is appended to the ring buffer.
+  const ingestProbe = async (p) => {
+    if (!p || !p.roi) return;
+    setProbe(p);
+    const rec = makeProbeRecord(p, { aec_value: aecValue, agc_gain: agcGain, r_gain: rGain, b_gain: bGain });
+    setProbeLog(await appendProbe(rec));
+  };
+
   // Load form fields from the box whenever we (re)connect / get fresh status.
   useEffect(() => {
     const s = status?.settings;
@@ -136,6 +166,19 @@ export default function SetupScreen() {
     }));
   };
 
+  // ── Refresh probe — live ROI readout on demand ───────────────────────────
+  const refreshProbe = async () => {
+    setProbing(true);
+    try {
+      const p = await getProbe(ip);
+      await ingestProbe(p);
+    } catch (e) {
+      Alert.alert(alertTitleFor(e), e.message || 'Could not read the box.');
+    } finally {
+      setProbing(false);
+    }
+  };
+
   // ── Auto-tune exposure (Bug 1c) — replaces manual +/- guesswork ──────────
   const autoTune = async () => {
     setTuning(true);
@@ -146,6 +189,8 @@ export default function SetupScreen() {
       setAecValue(r.aec_value);
       setTuneResult(r);
       markSetupDone();
+      // refresh the live readout at the new exposure
+      try { await ingestProbe(await getProbe(ip)); } catch {}
     } catch (e) {
       Alert.alert(alertTitleFor(e), e.message || 'Auto-tune failed.');
     } finally {
@@ -163,11 +208,36 @@ export default function SetupScreen() {
       if (r.responding === false) {
         Alert.alert('LED not responding', 'Check wiring/power to the illumination LED.');
       }
+      try { await ingestProbe(await getProbe(ip)); } catch {}
     } catch (e) {
       Alert.alert(alertTitleFor(e), e.message || 'LED test failed.');
     } finally {
       setLedTesting(false);
     }
+  };
+
+  // ── Quick-compare reference ──────────────────────────────────────────────
+  const setAsReference = async () => {
+    if (!probe?.roi) {
+      Alert.alert('Take a reading first', 'Tap Refresh to read the box, then set it as the reference.');
+      return;
+    }
+    const rec = makeProbeRecord(probe, { aec_value: aecValue, agc_gain: agcGain, r_gain: rGain, b_gain: bGain });
+    await setReference(rec);
+    setReferenceState(rec);
+  };
+  const clearRef = async () => {
+    await clearReference();
+    setReferenceState(null);
+  };
+
+  const exportProbes = async () => {
+    if (!probeLog.length) { Alert.alert('No probes yet', 'Take some readings first.'); return; }
+    try { await Share.share({ message: probeLogToCsv(probeLog), title: 'InPhoton-Aqua probes.csv' }); } catch {}
+  };
+  const clearProbes = async () => {
+    await clearProbeLog();
+    setProbeLog([]);
   };
 
   // ── Save (Bug 2): validate, confirm old→new, only then send ──────────────
@@ -361,6 +431,54 @@ export default function SetupScreen() {
         )}
       </View>
 
+      {/* Live readout card */}
+      <View style={styles.card}>
+        <View style={styles.readoutHeader}>
+          <Text style={styles.cardTitle}>Live readout</Text>
+          <TouchableOpacity style={styles.refreshBtn} onPress={refreshProbe} disabled={probing}>
+            {probing ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.refreshBtnText}>↻ Refresh</Text>}
+          </TouchableOpacity>
+        </View>
+
+        {probe?.roi ? (
+          <ProbeReadout probe={probe} />
+        ) : (
+          <Text style={styles.readoutHint}>Tap Refresh to read the sample-region colour.</Text>
+        )}
+
+        {/* Quick-compare (reference) */}
+        <View style={styles.refDivider} />
+        {reference && !refValid && (
+          <View style={styles.warnChip}>
+            <Text style={styles.warnChipText}>⚠ Settings changed — reference invalid. Re-reference.</Text>
+          </View>
+        )}
+        {refValid && probe?.roi ? (
+          <ReferenceReadout reference={reference} probe={probe} />
+        ) : (
+          <Text style={styles.readoutHint}>
+            {reference ? '' : 'Set a reference to compare later readings against it (A = log₁₀(I_ref / I_now)).'}
+          </Text>
+        )}
+        <View style={styles.refBtnRow}>
+          <TouchableOpacity
+            style={[styles.refBtn, !probe?.roi && styles.btnDisabled]}
+            onPress={setAsReference}
+            disabled={!probe?.roi}
+          >
+            <Text style={styles.refBtnText}>📌 Set as reference</Text>
+          </TouchableOpacity>
+          {reference && (
+            <TouchableOpacity style={styles.refClearBtn} onPress={clearRef}>
+              <Text style={styles.refClearBtnText}>Clear</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        {reference && (
+          <Text style={styles.refAge}>Reference set {timeAgo(reference.at)}</Text>
+        )}
+      </View>
+
       {/* Illumination card */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Illumination</Text>
@@ -395,6 +513,36 @@ export default function SetupScreen() {
             <TouchableOpacity style={styles.restoreBtn} onPress={restoreDefaults}>
               <Text style={styles.restoreBtnText}>↺ Restore defaults</Text>
             </TouchableOpacity>
+
+            {/* Recent probes ring buffer */}
+            <TouchableOpacity style={styles.probesToggle} onPress={() => setShowProbes(!showProbes)}>
+              <Text style={styles.advancedToggleText}>
+                {showProbes ? '▾' : '▸'} Recent probes ({probeLog.length})
+              </Text>
+            </TouchableOpacity>
+            {showProbes && (
+              <View style={styles.probesBox}>
+                {probeLog.length === 0 ? (
+                  <Text style={styles.readoutHint}>No probes logged yet.</Text>
+                ) : (
+                  probeLog.slice(0, 12).map((p, i) => (
+                    <Text key={i} style={styles.probeLogLine}>
+                      {new Date(p.at).toLocaleTimeString()}  R{p.r.toFixed(0)} G{p.g.toFixed(0)} B{p.b.toFixed(0)}  sat {p.sat.toFixed(1)}%
+                    </Text>
+                  ))
+                )}
+                <View style={styles.refBtnRow}>
+                  <TouchableOpacity style={styles.exportProbesBtn} onPress={exportProbes}>
+                    <Text style={styles.exportProbesBtnText}>⬇ Export CSV</Text>
+                  </TouchableOpacity>
+                  {probeLog.length > 0 && (
+                    <TouchableOpacity style={styles.refClearBtn} onPress={clearProbes}>
+                      <Text style={styles.refClearBtnText}>Clear log</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            )}
           </View>
         )}
       </View>
@@ -427,6 +575,62 @@ function StepperRow({ label, onMinus, onPlus }) {
       <Text style={styles.stepperLabel}>{label}</Text>
       <TouchableOpacity style={styles.stepBtn} onPress={onMinus}><Text style={styles.stepBtnText}>−</Text></TouchableOpacity>
       <TouchableOpacity style={styles.stepBtn} onPress={onPlus}><Text style={styles.stepBtnText}>+</Text></TouchableOpacity>
+    </View>
+  );
+}
+
+function timeAgo(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  return `${(s / 3600).toFixed(1)} h ago`;
+}
+
+// Live ROI mean per channel: value (0–255), % of full scale, max highlighted,
+// plus overall clipping %.
+function ProbeReadout({ probe }) {
+  const chans = [['R', probe.roi.r, '#EF5350'], ['G', probe.roi.g, '#66BB6A'], ['B', probe.roi.b, '#42A5F5']];
+  const maxVal = Math.max(probe.roi.r, probe.roi.g, probe.roi.b);
+  return (
+    <View>
+      <View style={styles.chanRow}>
+        {chans.map(([name, val, col]) => {
+          const isMax = val === maxVal;
+          return (
+            <View key={name} style={[styles.chanCell, isMax && styles.chanCellMax]}>
+              <Text style={[styles.chanName, { color: col }]}>{name}{isMax ? ' ▲' : ''}</Text>
+              <Text style={styles.chanVal}>{val.toFixed(0)}</Text>
+              <Text style={styles.chanPct}>{((val / 255) * 100).toFixed(0)}%</Text>
+            </View>
+          );
+        })}
+      </View>
+      <Text style={[styles.clipLine, { color: probe.roi_saturation_pct > 1 ? '#C62828' : '#78909C' }]}>
+        Clipping: {Number(probe.roi_saturation_pct).toFixed(2)}%
+        {probe.roi_saturation_pct > 1 ? ' ⚠ over 1% — measurements will fail' : ''}
+      </Text>
+    </View>
+  );
+}
+
+// Live per-channel A = log10(I_ref / I_now), largest-A channel highlighted.
+function ReferenceReadout({ reference, probe }) {
+  const { A, maxCh } = computeReferenceA(reference, probe.roi);
+  const chans = [['R', A.r, 'r', '#EF5350'], ['G', A.g, 'g', '#66BB6A'], ['B', A.b, 'b', '#42A5F5']];
+  return (
+    <View>
+      <Text style={styles.refLabel}>Absorbance vs reference  A = log₁₀(I_ref / I_now)</Text>
+      <View style={styles.chanRow}>
+        {chans.map(([name, a, key, col]) => {
+          const isMax = key === maxCh;
+          return (
+            <View key={name} style={[styles.chanCell, isMax && styles.chanCellMaxA]}>
+              <Text style={[styles.chanName, { color: col }]}>{name}{isMax ? ' ★' : ''}</Text>
+              <Text style={styles.chanValA}>{a === null ? '—' : a.toFixed(3)}</Text>
+            </View>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -502,6 +706,38 @@ const styles = StyleSheet.create({
   stepBtnText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
   restoreBtn: { marginTop: 4, alignItems: 'center', paddingVertical: 8 },
   restoreBtnText: { color: '#C62828', fontSize: 12, fontWeight: '600' },
+
+  // Live readout
+  readoutHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  refreshBtn: { backgroundColor: ACCENT, borderRadius: 10, paddingVertical: 7, paddingHorizontal: 14, minWidth: 84, alignItems: 'center' },
+  refreshBtnText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
+  readoutHint: { color: '#90A4AE', fontSize: 12, lineHeight: 17 },
+  chanRow: { flexDirection: 'row', gap: 8 },
+  chanCell: { flex: 1, backgroundColor: '#F5F7FA', borderRadius: 10, paddingVertical: 10, alignItems: 'center', borderWidth: 2, borderColor: 'transparent' },
+  chanCellMax: { borderColor: '#1565C0', backgroundColor: '#E3F2FD' },
+  chanCellMaxA: { borderColor: '#6A1B9A', backgroundColor: '#F3E5F5' },
+  chanName: { fontSize: 12, fontWeight: 'bold' },
+  chanVal: { fontSize: 20, fontWeight: 'bold', color: '#1A237E', marginTop: 2 },
+  chanValA: { fontSize: 18, fontWeight: 'bold', color: '#4A148C', marginTop: 2 },
+  chanPct: { fontSize: 11, color: '#78909C', marginTop: 1 },
+  clipLine: { fontSize: 12, marginTop: 8, fontWeight: '600' },
+
+  refDivider: { height: 1, backgroundColor: '#ECEFF1', marginVertical: 14 },
+  refLabel: { color: '#6A1B9A', fontSize: 12, fontWeight: '600', marginBottom: 8 },
+  warnChip: { backgroundColor: '#FFF3E0', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: '#EF6C00' },
+  warnChipText: { color: '#E65100', fontSize: 12, fontWeight: '600' },
+  refBtnRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  refBtn: { flex: 1, backgroundColor: '#6A1B9A', borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
+  refBtnText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
+  refClearBtn: { borderWidth: 1, borderColor: '#90A4AE', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 16 },
+  refClearBtnText: { color: '#546E7A', fontWeight: '600', fontSize: 13 },
+  refAge: { color: '#90A4AE', fontSize: 11, marginTop: 8 },
+
+  probesToggle: { marginTop: 12 },
+  probesBox: { marginTop: 8, backgroundColor: '#F5F5F5', borderRadius: 10, padding: 12 },
+  probeLogLine: { color: '#546E7A', fontSize: 11, lineHeight: 18, fontFamily: 'monospace' },
+  exportProbesBtn: { flex: 1, backgroundColor: ACCENT, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  exportProbesBtnText: { color: '#FFF', fontWeight: '700', fontSize: 12 },
 
   saveBtn: { backgroundColor: '#2E7D32', borderRadius: 14, paddingVertical: 16, alignItems: 'center', elevation: 2 },
   saveBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
