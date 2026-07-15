@@ -9,6 +9,7 @@ import {
 } from '../utils/deviceCalibration';
 import { postMeasure, postBlank, createCancelToken } from '../api/boxClient';
 import { useBoxConnection } from '../context/BoxConnectionContext';
+import { loadChannel, channelA } from '../utils/channelPref';
 import MeasureProgress from '../components/MeasureProgress';
 
 // "Link this box to the calibration" — the device-factor fit + validation,
@@ -47,8 +48,10 @@ export default function LinkBoxScreen({ navigation }) {
     setProgress({ label, token });
     try {
       const m = await postMeasure(ip, { signal: token.signal });
-      if (typeof m.A_blue !== 'number') throw Object.assign(new Error('Box did not return a reading.'), { kind: 'gate' });
-      return m.A_blue;
+      const ch = await loadChannel();
+      const a = channelA(m, ch);
+      if (typeof a !== 'number') throw Object.assign(new Error('Box did not return a reading.'), { kind: 'gate' });
+      return a;
     } finally {
       setProgress(null);
     }

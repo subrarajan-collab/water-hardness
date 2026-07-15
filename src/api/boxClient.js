@@ -197,18 +197,24 @@ export async function connectAndVerify(ip) {
 
 // ─── Result mapping ─────────────────────────────────────────────────────────
 // Maps a /measure JSON response into the analysisData shape ResultScreen reads.
-export function measureToAnalysis(m) {
+// `channel` selects which colour channel's absorbance becomes the primary
+// `absorbance` used for ppm — green by default (EBT peaks in green). All
+// three channels are always kept for traceability / channel switching.
+export function measureToAnalysis(m, channel = 'green') {
   const raw = m.raw || {};
   const roi = raw.roi || {};
   const r = Math.round(roi.r ?? 0), g = Math.round(roi.g ?? 0), b = Math.round(roi.b ?? 0);
   const total = r + g + b;
+  const primary = channel === 'red' ? m.A_red : channel === 'blue' ? m.A_blue : m.A_green;
   return {
     r, g, b,
+    channel,
     blueScore: b,
     blueDominance: total > 0 ? parseFloat(((b / total) * 100).toFixed(1)) : 0,
-    absorbance: m.A_blue,
+    absorbance: typeof primary === 'number' ? primary : m.A_blue,
     absorbanceR: m.A_red,
     absorbanceG: m.A_green,
+    absorbanceB: m.A_blue,
     absorbanceStdDev: m.absorbance_sigma,
     blueScoreStdDev: m.absorbance_sigma,
     transmittance: null,

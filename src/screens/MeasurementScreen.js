@@ -8,6 +8,7 @@ import { useBoxConnection } from '../context/BoxConnectionContext';
 import { loadCalibrationPoints, saveTestResult } from '../utils/calibration';
 import { loadDeviceCal, computeHardnessDeviceAware, masterCurveHash } from '../utils/deviceCalibration';
 import { computeReadiness, classifyHardness, blankAgeText } from '../utils/readiness';
+import { loadChannel } from '../utils/channelPref';
 import MeasureProgress from '../components/MeasureProgress';
 import ResultPanel from '../components/ResultPanel';
 import ReadinessCard from '../components/ReadinessCard';
@@ -140,7 +141,8 @@ export default function MeasurementScreen({ navigation }) {
     setSaved(false);
     try {
       const m = await postMeasure(ip, { signal: token.signal });
-      const analysis = measureToAnalysis(m);
+      const channel = await loadChannel();
+      const analysis = measureToAnalysis(m, channel);
       const res = computeHardnessDeviceAware(analysis, masterPoints, deviceCal);
       setResult(analysis);
       setHardnessPPM(res?.ppm ?? null);

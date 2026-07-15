@@ -7,6 +7,7 @@ import {
   loadDeviceCal, computeHardnessDeviceAware, masterCurveHash, VALIDATION_TOLERANCE,
 } from '../utils/deviceCalibration';
 import { postMeasure, createCancelToken, measureToAnalysis } from '../api/boxClient';
+import { loadChannel } from '../utils/channelPref';
 import { useBoxConnection } from '../context/BoxConnectionContext';
 import { classifyHardness } from '../utils/readiness';
 import MeasureProgress from '../components/MeasureProgress';
@@ -42,7 +43,8 @@ export default function AccuracyCheckScreen({ navigation }) {
     setOutcome(null);
     try {
       const m = await postMeasure(ip, { signal: token.signal });
-      const analysis = measureToAnalysis(m);
+      const channel = await loadChannel();
+      const analysis = measureToAnalysis(m, channel);
       const res = computeHardnessDeviceAware(analysis, masterPoints, deviceCal);
       const measuredPpm = res?.ppm ?? null;
       const pass = measuredPpm !== null && Math.abs(measuredPpm - target) <= VALIDATION_TOLERANCE * target;

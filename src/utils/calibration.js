@@ -3,12 +3,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const CALIBRATION_KEY = 'calibration_points';
 const HISTORY_KEY = 'test_history';
 
-export async function saveCalibrationPoint(blueScore, hardnessPPM, label = '', absorbance = null) {
+export async function saveCalibrationPoint(blueScore, hardnessPPM, label = '', absorbance = null, channels = null) {
   const existing = await loadCalibrationPoints();
   const point = {
     id: Date.now().toString(),
     blueScore,
-    absorbance, // exposure-immune key; null for legacy manual points
+    absorbance,          // active-channel value used for ppm interpolation
+    // Per-channel absorbances so the curve can be recomputed onto another
+    // channel later without re-measuring (channels = {r, g, b}).
+    absR: channels?.r ?? null,
+    absG: channels?.g ?? null,
+    absB: channels?.b ?? (channels ? null : absorbance),
     hardness: hardnessPPM,
     label,
     createdAt: new Date().toISOString(),

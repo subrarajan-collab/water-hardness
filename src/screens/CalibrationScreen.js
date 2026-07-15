@@ -8,8 +8,11 @@ import {
 } from '../utils/calibration';
 import { exportMasterCurve, parseMasterCurve, masterCurveHash, loadDeviceCal } from '../utils/deviceCalibration';
 import { useBoxConnection } from '../context/BoxConnectionContext';
+import { CHANNELS, channelMeta, loadChannel, saveChannel, pointA } from '../utils/channelPref';
 import CurvePlot from '../components/CurvePlot';
 import Accordion from '../components/Accordion';
+
+const CAL_KEY = 'calibration_points';
 
 const CALIBRATION_KEY = 'calibration_points';
 
@@ -21,11 +24,40 @@ export default function CalibrationScreen({ navigation }) {
   const [deviceCal, setDeviceCal] = useState(null);
   const [importText, setImportText] = useState('');
   const [showImport, setShowImport] = useState(false);
+  const [channel, setChannel] = useState('green');
 
   const load = useCallback(async () => {
     setPoints(await loadCalibrationPoints());
     setDeviceCal(deviceKey ? await loadDeviceCal(deviceKey) : null);
+    setChannel(await loadChannel());
   }, [deviceKey]);
+
+  // Recompute the curve onto a different channel using each point's stored
+  // per-channel absorbance — no re-measuring. Requires points captured with
+  // all channels (Full Calibration ≥ this build); older blue-only points
+  // can't be switched and are reported.
+  const switchChannel = async (ch) => {
+    if (ch === channel) return;
+    const pts = await loadCalibrationPoints();
+    const missing = pts.filter((p) => pointA(p, ch) === null || pointA(p, ch) === undefined);
+    if (missing.length) {
+      Alert.alert(
+        'Can’t switch channel',
+        `${missing.length} of ${pts.length} points were captured before per-channel data was stored, so the ` +
+        `${channelMeta(ch).label} curve can’t be rebuilt without re-measuring. Run a full calibration on ${channelMeta(ch).label}.`
+      );
+      return;
+    }
+    const remapped = pts.map((p) => ({ ...p, absorbance: pointA(p, ch) }));
+    await AsyncStorage.setItem(CAL_KEY, JSON.stringify(remapped));
+    await saveChannel(ch);
+    setChannel(ch);
+    setPoints(remapped);
+    Alert.alert(
+      'Curve rebuilt',
+      `Now using the ${channelMeta(ch).label} channel. Re-link any boxes (their old link was fit on ${channelMeta(channel).label}).`
+    );
+  };
 
   useEffect(() => {
     const unsub = navigation.addListener('focus', load);
@@ -151,7 +183,24 @@ export default function CalibrationScreen({ navigation }) {
 
       {/* ── Expert content, tucked away ── */}
       <Accordion title="Advanced">
-        <Text style={styles.advSection}>Curve</Text>
+        <Text style={styles.advSection}>Measurement channel</Text>
+        <Text style={styles.advNote}>
+          Green is used for the EBT reagent. Switching rebuilds the curve from stored
+          per-channel data (no re-measuring); boxes then need re-linking.
+        </Text>
+        <View style={styles.chanRow}>
+          {CHANNELS.map((c) => (
+            <TouchableOpacity
+              key={c.key}
+              style={[styles.chanBtn, channel === c.key && { backgroundColor: c.color, borderColor: c.color }]}
+              onPress={() => switchChannel(c.key)}
+            >
+              <Text style={[styles.chanBtnText, channel === c.key && { color: '#FFF' }]}>{c.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Text style={styles.advSection}>Curve · {channelMeta(channel).label}</Text>
         <CurvePlot points={points} />
 
         <Text style={styles.advSection}>Points</Text>
@@ -244,7 +293,11 @@ const styles = StyleSheet.create({
   btnDisabled: { backgroundColor: '#B0BEC5' },
 
   advSection: { fontSize: 13, fontWeight: 'bold', color: '#1565C0', marginTop: 14, marginBottom: 8 },
+  advNote: { color: '#78909C', fontSize: 11, lineHeight: 16, marginBottom: 8 },
   advMono: { color: '#546E7A', fontSize: 12, lineHeight: 18 },
+  chanRow: { flexDirection: 'row', gap: 8, marginBottom: 6 },
+  chanBtn: { flex: 1, borderWidth: 1.5, borderColor: '#CFD8DC', borderRadius: 10, paddingVertical: 9, alignItems: 'center' },
+  chanBtnText: { color: '#546E7A', fontWeight: '700', fontSize: 13 },
   emptyText: { color: '#90A4AE', fontSize: 13 },
 
   pointRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
