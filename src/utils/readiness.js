@@ -108,12 +108,31 @@ export const CAL_REPETITIONS = 3;
 export const CAL_SIGMA_WARN = 0.02;          // σ across the 3 reps above this → offer re-run
 export const FULL_CAL_VALIDATION_TOL = 0.15; // ±15% on the wizard's validation run
 
-// Dilution table text for the intro screen: mL of 1000 ppm stock per 100 mL
-// final volume (topped up with distilled water).
-export function dilutionRows() {
-  return CAL_STANDARDS_PPM.map((ppm) => ({
-    ppm,
-    stockMl: ppm / 10,
-    waterMl: 100 - ppm / 10,
-  }));
+// Dilution recipe for one standard: mL of 1000 ppm stock per 100 mL final
+// volume (topped up with distilled water).
+export function dilutionForPpm(ppm) {
+  return { ppm, stockMl: parseFloat((ppm / 10).toFixed(2)), waterMl: parseFloat((100 - ppm / 10).toFixed(2)) };
+}
+export function dilutionRows(list = CAL_STANDARDS_PPM) {
+  return [...list].sort((a, b) => a - b).map(dilutionForPpm);
+}
+
+// Validate a user-edited standards list. Rules: all numbers ≥ 0, a 0 ppm
+// blank must be present (it's the reference), no duplicates, at least 3
+// points total (2 standards + blank) for a usable curve.
+export function validateStandardsList(list) {
+  const nums = (list || []).map(Number);
+  if (nums.some((n) => !Number.isFinite(n) || n < 0)) {
+    return { ok: false, error: 'Concentrations must be numbers ≥ 0.' };
+  }
+  if (!nums.includes(0)) {
+    return { ok: false, error: 'A 0 ppm blank must be included — it is the reference.' };
+  }
+  if (new Set(nums).size !== nums.length) {
+    return { ok: false, error: 'Duplicate concentrations are not allowed.' };
+  }
+  if (nums.length < 3) {
+    return { ok: false, error: 'Add at least 2 standards plus the 0 ppm blank.' };
+  }
+  return { ok: true, sorted: [...nums].sort((a, b) => a - b) };
 }
