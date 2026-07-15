@@ -26,10 +26,10 @@
       "./plugins/withAgpVersion",
       "./plugins/withCleartextTraffic"
     ],
-    "owner": "nagapavi",
+    "owner": "inphoton",
     "extra": {
       "eas": {
-        "projectId": "c9d624d8-233f-4729-ad32-d1d111741810"
+        "projectId": "ec2624a0-6e43-41c0-b276-5bee573d3e32"
       }
     }
   }
