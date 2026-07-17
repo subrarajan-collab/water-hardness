@@ -118,11 +118,24 @@ c = blankA − m · A_master(0)
 ## 5. What actually limits accuracy (ranked, for optimisation)
 
 1. **Green dynamic range on the blank.** Auto-tune targets the **max channel's**
-   p99 at 200–230. With a warm/red-heavy white LED, **red** will be the max
-   channel, so green settles well below full scale — wasting green's range.
-   **Fix: tune `r_gain`/`b_gain` so the blank reads near-neutral (R≈G≈B).**
-   Then auto-tune maximises green too. This is the single highest-leverage
-   optimisation available and it costs nothing.
+   p99 at 200–230, so green is only maximised if green is the max channel on
+   the blank. Check this first — the answer depends on your blank's colour:
+
+   - **Blank = EBT reagent (blue, the normal case).** Free EBT at pH 10 absorbs
+     red hard, so the blank already reads green-dominant and **green is the max
+     channel — auto-tune is already optimising exactly the channel you measure.
+     Leave `r_gain`/`b_gain` at 1.0.** Do *not* "neutralise" the white balance
+     here: R is low because of real absorption, and forcing R up to match G
+     would only amplify red noise while fighting the chemistry.
+     *Measured on the rig: R=16 (6%), G=222 (87%), B=98 (38%), 0% clipping —
+     near-ideal; green starts at 87% and falls as the wine-red complex forms.*
+   - **Blank = optically neutral (distilled water, no reagent).** Then a
+     warm/red-heavy white LED can make **red** the max channel, leaving green
+     below full scale. Only in this case, trim `r_gain`/`b_gain` so the blank
+     reads roughly neutral before auto-tuning.
+
+   The rule, stated once: **the blank must be bright on the measurement channel
+   and must not clip.** Samples only ever get darker from there.
 2. **Blank drift** — every A is relative to the stored blank. LED thermal drift,
    any mechanical movement, or bottle re-seating invalidates it. Re-blank often;
    the 24 h limit is an upper bound, not a recommendation.
@@ -194,8 +207,14 @@ calibration flow.
 
 ## 8. Recommended sequence before calibrating standards
 
-1. **Neutralise WB on the blank**: put the 0 ppm blank in, Setup → Refresh probe,
-   adjust `r_gain`/`b_gain` until R ≈ G ≈ B. *(Do this before auto-tune.)*
+0. **Place the ROI inside the uniformly lit region.** The camera's field of view
+   is taller than the diffuser, so the preview fades to black toward the bottom.
+   An ROI straddling that gradient averages over a steep brightness ramp and
+   becomes hypersensitive to ±1 mm of movement. Drag it into the flat bright
+   zone with margin, then re-capture the reference.
+1. **Check which channel is max on the blank** (Setup → Refresh probe). With an
+   EBT blank green should already be max → leave WB gains at 1.0. Only trim
+   `r_gain`/`b_gain` if the blank is optically neutral and red dominates (§5.1).
 2. **Auto-tune exposure** on that blank → verdict "ok", saturation < 1 %.
 3. **Noise floor**: Set-as-reference on the blank, then re-probe it 3–5×.
    The spread in A_green is your instrument's noise floor — nothing you measure
