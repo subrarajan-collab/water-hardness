@@ -61,6 +61,7 @@ static esp_err_t hStatus(httpd_req_t* req) {
   j +=   "\"agc_gain\":" + String(g_settings.agc_gain) + ",";
   j +=   "\"r_gain\":" + String(g_settings.r_gain, 3) + ",";
   j +=   "\"b_gain\":" + String(g_settings.b_gain, 3) + ",";
+  j +=   "\"channel\":\"" + String(channelName(g_channel)) + "\",";
   j +=   "\"frame_count\":" + String(g_settings.frame_count) + ",";
   j +=   "\"settle_ms\":" + String(g_settings.settle_ms) + ",";
   j +=   "\"interval_ms\":" + String(g_settings.interval_ms) + ",";
@@ -205,6 +206,18 @@ static float jNum(const String& s, const char* key, float def) {
 static bool jHasKey(const String& s, const char* key) {
   return s.indexOf(String("\"") + key + "\"") >= 0;
 }
+// minimal JSON string extractor: "key": "value"  → returns "" if absent
+static String jStr(const String& s, const char* key) {
+  int k = s.indexOf(String("\"") + key + "\"");
+  if (k < 0) return "";
+  int c = s.indexOf(':', k);
+  if (c < 0) return "";
+  int q1 = s.indexOf('"', c);
+  if (q1 < 0) return "";
+  int q2 = s.indexOf('"', q1 + 1);
+  if (q2 < 0) return "";
+  return s.substring(q1 + 1, q2);
+}
 static bool jRect(const String& s, const char* key, RectN& out) {
   int k = s.indexOf(String("\"") + key + "\"");
   if (k < 0) return false;
@@ -254,6 +267,18 @@ static esp_err_t hConfig(httpd_req_t* req) {
   if (tmp.frame_count < 1 || tmp.frame_count > 32) {
     return sendJsonStatus(req, 400, "Bad Request",
       "{\"ok\":false,\"error\":\"frame_count must be 1-32\"}");
+  }
+
+  // Measurement channel (own NVS key, validated by name)
+  if (jHasKey(body, "channel")) {
+    String cs = jStr(body, "channel");
+    int ch = channelFromName(cs.c_str(), -1);
+    if (ch < 0) {
+      return sendJsonStatus(req, 400, "Bad Request",
+        "{\"ok\":false,\"error\":\"channel must be red, green or blue (got '" + cs + "')\"}");
+    }
+    g_channel = ch;
+    channelSave();
   }
 
   g_settings = tmp;

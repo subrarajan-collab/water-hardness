@@ -141,18 +141,29 @@ c = blankA − m · A_master(0)
 
 ## 6. Defects / inconsistencies found in review
 
-### 6.1 σ and outlier rejection use blue, not the active channel — **open**
-`aqua_measure.cpp` computes `aBlue[i] = log10(blank.b/frame.b)`, does MAD
-rejection on it, and returns `absorbance_sigma = σ(A_blue)`.
-- The Measurement screen displays this as "Repeatability (σ)" next to a **green**
-  absorbance → **the σ shown is for the wrong channel**.
-- Frame rejection is decided by the weakest channel; blue's inflated MAD widens
-  `tol`, so genuinely bad frames may survive.
-- **Not affected:** Full Calibration's per-standard σ (computed app-side from 3
-  reps of A_green) is correct.
-- **Fix:** give the firmware a `channel` setting (NVS + `/config` + `/status`),
-  use it for rejection and σ, and return `sigma_red/green/blue`. Requires an
-  API bump + reflash.
+### 6.1 σ and outlier rejection used blue, not the active channel — **FIXED (fw 1.3.0 / api v3)**
+Previously `aqua_measure.cpp` computed `aBlue[i] = log10(blank.b/frame.b)`, did
+MAD rejection on it, and returned `absorbance_sigma = σ(A_blue)` — so the
+"Repeatability (σ)" shown next to a **green** absorbance was blue's σ, and frame
+rejection was decided by the weakest channel (blue's inflated MAD widened `tol`,
+letting bad frames survive).
+
+Fix:
+- New **`channel`** setting (own NVS key — deliberately *not* inside `Settings`,
+  because `configLoad()` wipes everything to defaults when `sizeof(Settings)`
+  changes, which would have reset the user's ROI/exposure on update).
+  Settable via `/config {"channel":"green"}`, reported in `/status`.
+- Outlier rejection now keys on the **active channel**.
+- `/measure` returns **`sigma_red`/`sigma_green`/`sigma_blue`** plus the active
+  `channel`; `absorbance_sigma` is the active channel's σ.
+- App prefers the per-channel σ and falls back to `absorbance_sigma` only for
+  pre-v3 firmware. The app pushes the channel to the box when it's chosen and
+  before capturing a calibration reference.
+
+Measured impact (unit test): box reported σ_blue = 0.041 where true σ_green =
+0.004 — a **10× overstatement** of the instrument's repeatability.
+
+**Requires a reflash** to fw 1.3.0. Existing ROI/exposure survive it.
 
 ### 6.2 Auto-tune optimises the max channel, not the measurement channel
 See §5.1. Defensible (prevents any channel clipping) but means green is not

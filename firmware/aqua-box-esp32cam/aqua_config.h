@@ -2,7 +2,7 @@
 #include <Arduino.h>
 
 // ─── Firmware identity ───────────────────────────────────────────────────────
-#define FW_VERSION "1.2.0"
+#define FW_VERSION "1.3.0"
 #define DEVICE_TYPE "esp32cam"
 #define AP_SSID     "AQUA-BOX"
 
@@ -13,7 +13,10 @@
 // symptom (a 404) with no explanation.
 // v2: added r_gain/b_gain (manual WB), roi_p99 in /probe, POST /autotune,
 //     GET /ledtest, /config now validates and rejects out-of-range values.
-#define API_VERSION 2
+// v3: measurement channel is configurable (default green) and drives BOTH the
+//     outlier-rejection metric and the reported sigma; /measure now returns
+//     per-channel sigma_red/green/blue plus the active "channel".
+#define API_VERSION 3
 
 // ─── AI-Thinker ESP32-CAM pin map ────────────────────────────────────────────
 #define PWDN_GPIO_NUM   32
@@ -70,6 +73,21 @@ struct BlankData {
 };
 
 // Globals (defined in the .ino)
+// Which channel carries the signal. Drives the MAD outlier-rejection metric
+// and the primary reported sigma. Green by default: the EBT wine-red complex
+// absorbs strongest in green, and green is 6-bit in RGB565 vs 5-bit for R/B.
+//
+// Deliberately stored under its OWN NVS key rather than inside Settings —
+// configLoad() resets everything to defaults whenever sizeof(Settings)
+// changes, so adding a field here would silently wipe the user's ROI and
+// exposure on the first boot after an update.
+enum MeasChannel { CH_RED = 0, CH_GREEN = 1, CH_BLUE = 2 };
+extern int g_channel;
+void channelLoad();
+void channelSave();
+const char* channelName(int ch);
+int channelFromName(const char* name, int fallback);
+
 extern Settings  g_settings;
 extern BlankData g_blank;
 

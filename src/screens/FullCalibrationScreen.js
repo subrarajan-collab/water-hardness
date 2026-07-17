@@ -3,7 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { postMeasure, postBlank, createCancelToken } from '../api/boxClient';
+import { postMeasure, postBlank, postChannel, createCancelToken } from '../api/boxClient';
 import { useBoxConnection } from '../context/BoxConnectionContext';
 import { computeHardness } from '../utils/colorAnalysis';
 import { masterCurveHash, saveDeviceCal } from '../utils/deviceCalibration';
@@ -116,6 +116,9 @@ export default function FullCalibrationScreen({ navigation }) {
     const token = createCancelToken();
     setProgress({ label: 'Capturing reference (0 ppm)…', token });
     try {
+      // The reference anchors the whole run — make sure the box is rejecting
+      // frames and reporting σ on the channel we're about to build the curve on.
+      try { await postChannel(ip, channel); } catch {}
       await postBlank(ip, { signal: token.signal });
       await refresh();
     } catch (e) { setProgress(null); failAlert(e); return; }
@@ -319,7 +322,12 @@ export default function FullCalibrationScreen({ navigation }) {
                 <TouchableOpacity
                   key={c.key}
                   style={[styles.chanBtn, channel === c.key && { backgroundColor: c.color, borderColor: c.color }]}
-                  onPress={() => { setChannel(c.key); persist({ channel: c.key }); }}
+                  onPress={async () => {
+                    setChannel(c.key);
+                    persist({ channel: c.key });
+                    // keep the box's rejection/σ on the same channel we read
+                    try { await postChannel(ip, c.key); } catch {}
+                  }}
                 >
                   <Text style={[styles.chanBtnText, channel === c.key && { color: '#FFF' }]}>{c.label}</Text>
                 </TouchableOpacity>

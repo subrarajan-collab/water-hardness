@@ -1,5 +1,6 @@
 #include "aqua_config.h"
 #include <Preferences.h>
+#include <string.h>
 
 static Preferences prefs;
 
@@ -35,6 +36,29 @@ void configLoad() {
 void configSave() {
   prefs.begin("aqua", false);
   prefs.putBytes("settings", &g_settings, sizeof(Settings));
+  prefs.end();
+}
+
+// ─── Measurement channel (own NVS key, see aqua_config.h) ────────────────────
+const char* channelName(int ch) {
+  return ch == CH_RED ? "red" : ch == CH_BLUE ? "blue" : "green";
+}
+int channelFromName(const char* name, int fallback) {
+  if (!name) return fallback;
+  if (!strcmp(name, "red")) return CH_RED;
+  if (!strcmp(name, "green")) return CH_GREEN;
+  if (!strcmp(name, "blue")) return CH_BLUE;
+  return fallback;
+}
+void channelLoad() {
+  prefs.begin("aqua", true);
+  g_channel = prefs.getInt("channel", CH_GREEN);
+  prefs.end();
+  if (g_channel < CH_RED || g_channel > CH_BLUE) g_channel = CH_GREEN;
+}
+void channelSave() {
+  prefs.begin("aqua", false);
+  prefs.putInt("channel", g_channel);
   prefs.end();
 }
 

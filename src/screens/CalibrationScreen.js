@@ -9,6 +9,7 @@ import {
 import { exportMasterCurve, parseMasterCurve, masterCurveHash, loadDeviceCal } from '../utils/deviceCalibration';
 import { useBoxConnection } from '../context/BoxConnectionContext';
 import { CHANNELS, channelMeta, loadChannel, saveChannel, pointA } from '../utils/channelPref';
+import { postChannel } from '../api/boxClient';
 import CurvePlot from '../components/CurvePlot';
 import Accordion from '../components/Accordion';
 
@@ -19,7 +20,7 @@ const CALIBRATION_KEY = 'calibration_points';
 // Calibration hub: three task-shaped doors (Full calibration / Link this box
 // / Accuracy check) with everything numeric behind the Advanced accordion.
 export default function CalibrationScreen({ navigation }) {
-  const { connected, boxId, deviceKey } = useBoxConnection();
+  const { ip, connected, boxId, deviceKey } = useBoxConnection();
   const [points, setPoints] = useState([]);
   const [deviceCal, setDeviceCal] = useState(null);
   const [importText, setImportText] = useState('');
@@ -51,6 +52,7 @@ export default function CalibrationScreen({ navigation }) {
     const remapped = pts.map((p) => ({ ...p, absorbance: pointA(p, ch) }));
     await AsyncStorage.setItem(CAL_KEY, JSON.stringify(remapped));
     await saveChannel(ch);
+    if (connected) { try { await postChannel(ip, ch); } catch {} }
     setChannel(ch);
     setPoints(remapped);
     Alert.alert(

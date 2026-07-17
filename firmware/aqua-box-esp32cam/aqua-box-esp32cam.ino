@@ -14,6 +14,7 @@
 Settings  g_settings;
 BlankData g_blank;
 String    g_boxId;
+int       g_channel = CH_GREEN;
 
 static String macToBoxId() {
   uint8_t mac[6];
@@ -53,7 +54,9 @@ void setup() {
 
   ledInit();          // LED pin LOW at boot, before anything else
   configLoad();
+  channelLoad();
   blankLoad();
+  Serial.printf("measurement channel: %s\n", channelName(g_channel));
 
   if (!cameraInit()) {
     Serial.println("FATAL: camera init failed");

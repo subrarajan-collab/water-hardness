@@ -110,38 +110,53 @@ String runSequenceJson(bool asBlank) {
   // ── /measure: need a blank ──
   if (!g_blank.valid) return "{\"ok\":false,\"error\":\"no blank stored — run /blank first\"}";
 
-  // Per-frame A_blue for outlier rejection (blank_net / frame_net)
-  float aBlue[MAX_FRAMES];
-  for (int i = 0; i < got; i++)
-    aBlue[i] = log10f(g_blank.roiNet.b / roiNet[i].b);
+  // Per-frame absorbance for every channel: A = log10(blank_net / frame_net)
+  float aR[MAX_FRAMES], aG[MAX_FRAMES], aB[MAX_FRAMES];
+  for (int i = 0; i < got; i++) {
+    aR[i] = log10f(g_blank.roiNet.r / roiNet[i].r);
+    aG[i] = log10f(g_blank.roiNet.g / roiNet[i].g);
+    aB[i] = log10f(g_blank.roiNet.b / roiNet[i].b);
+  }
+
+  // Outlier rejection is keyed on the ACTIVE measurement channel — rejecting
+  // on a weak channel is worthless: its |A - median| is dominated by noise,
+  // which inflates the MAD, widens the tolerance, and lets genuinely bad
+  // frames survive.
+  float* aSel = (g_channel == CH_RED) ? aR : (g_channel == CH_BLUE) ? aB : aG;
+
   float tmp[MAX_FRAMES];
-  for (int i = 0; i < got; i++) tmp[i] = aBlue[i];
+  for (int i = 0; i < got; i++) tmp[i] = aSel[i];
   float med = medianf(tmp, got);
-  for (int i = 0; i < got; i++) tmp[i] = fabsf(aBlue[i] - med);
+  for (int i = 0; i < got; i++) tmp[i] = fabsf(aSel[i] - med);
   float mad = medianf(tmp, got);
   float tol = fmaxf(0.02f, 3.0f * mad);
 
   bool keep[MAX_FRAMES]; int kept = 0;
-  for (int i = 0; i < got; i++) { keep[i] = fabsf(aBlue[i] - med) <= tol; if (keep[i]) kept++; }
+  for (int i = 0; i < got; i++) { keep[i] = fabsf(aSel[i] - med) <= tol; if (keep[i]) kept++; }
   if (kept < 3) { for (int i = 0; i < got; i++) keep[i] = true; kept = got; }
 
-  // Average kept per-channel A and net means; sigma of A_blue
+  // Average kept per-channel A and net means
   double sA_r = 0, sA_g = 0, sA_b = 0;
   double sRoiR = 0, sRoiG = 0, sRoiB = 0, sPr = 0, sPg = 0, sPb = 0;
   for (int i = 0; i < got; i++) {
     if (!keep[i]) continue;
-    sA_r += log10(g_blank.roiNet.r / roiNet[i].r);
-    sA_g += log10(g_blank.roiNet.g / roiNet[i].g);
-    sA_b += log10(g_blank.roiNet.b / roiNet[i].b);
+    sA_r += aR[i]; sA_g += aG[i]; sA_b += aB[i];
     sRoiR += roiNet[i].r; sRoiG += roiNet[i].g; sRoiB += roiNet[i].b;
     sPr += (pANet[i].r + pBNet[i].r) / 2.0;
     sPg += (pANet[i].g + pBNet[i].g) / 2.0;
     sPb += (pANet[i].b + pBNet[i].b) / 2.0;
   }
   float Ar = sA_r / kept, Ag = sA_g / kept, Ab = sA_b / kept;
-  double var = 0;
-  for (int i = 0; i < got; i++) if (keep[i]) var += (aBlue[i] - Ab) * (aBlue[i] - Ab);
-  float sigma = sqrtf(var / kept);
+
+  // σ for every channel (about that channel's own mean), so the app can show
+  // the repeatability of the channel it actually reads.
+  auto sigmaOf = [&](float* a, float mean) -> float {
+    double var = 0;
+    for (int i = 0; i < got; i++) if (keep[i]) var += (a[i] - mean) * (a[i] - mean);
+    return sqrtf(var / kept);
+  };
+  float sigR = sigmaOf(aR, Ar), sigG = sigmaOf(aG, Ag), sigB = sigmaOf(aB, Ab);
+  float sigma = (g_channel == CH_RED) ? sigR : (g_channel == CH_BLUE) ? sigB : sigG;
 
   long age = blankAgeSeconds();
 
@@ -149,7 +164,11 @@ String runSequenceJson(bool asBlank) {
   j += "\"A_blue\":"  + String(Ab, 4) + ",";
   j += "\"A_red\":"   + String(Ar, 4) + ",";
   j += "\"A_green\":" + String(Ag, 4) + ",";
-  j += "\"absorbance_sigma\":" + String(sigma, 4) + ",";
+  j += "\"absorbance_sigma\":" + String(sigma, 4) + ",";   // σ of the ACTIVE channel
+  j += "\"channel\":\"" + String(channelName(g_channel)) + "\",";
+  j += "\"sigma_red\":" + String(sigR, 4) + ",";
+  j += "\"sigma_green\":" + String(sigG, 4) + ",";
+  j += "\"sigma_blue\":" + String(sigB, 4) + ",";
   j += "\"raw\":{";
   j +=   "\"roi\":{\"r\":" + String(sRoiR/kept,2) + ",\"g\":" + String(sRoiG/kept,2) + ",\"b\":" + String(sRoiB/kept,2) + "},";
   j +=   "\"patch\":{\"r\":" + String(sPr/kept,2) + ",\"g\":" + String(sPg/kept,2) + ",\"b\":" + String(sPb/kept,2) + "}},";

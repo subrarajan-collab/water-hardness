@@ -10,7 +10,10 @@ export const DEFAULT_IP = '192.168.4.1';
 // against the firmware's own api_version (from /ping or /status) on connect.
 // v2: r_gain/b_gain in /status+/config, roi_p99 in /probe, POST /autotune,
 //     GET /ledtest, /config validates and rejects out-of-range values (400).
-export const EXPECTED_API_VERSION = 2;
+// v3: measurement channel configurable via /config + reported in /status;
+//     /measure returns sigma_red/green/blue and the active channel, and both
+//     outlier rejection and absorbance_sigma follow that channel.
+export const EXPECTED_API_VERSION = 3;
 
 // The one place every endpoint path is spelled out. If you add a route to
 // the firmware, add it here — screens must not hardcode paths.
@@ -164,6 +167,9 @@ export const getProbe   = (ip) => req(ip, ENDPOINTS.PROBE.path, { timeoutMs: 150
 export const postAutotune = (ip, opts = {}) => req(ip, ENDPOINTS.AUTOTUNE.path, { method: 'POST', timeoutMs: 30000, signal: opts.signal });
 export const getLedTest = (ip) => req(ip, ENDPOINTS.LEDTEST.path, { timeoutMs: 15000 });
 export const postConfig = (ip, cfg) => req(ip, ENDPOINTS.CONFIG.path, { method: 'POST', body: cfg, timeoutMs: 10000 });
+// Push the measurement channel to the box so its outlier rejection and
+// reported sigma follow the same channel the app reads.
+export const postChannel = (ip, channel) => postConfig(ip, { channel });
 export const postBlank  = (ip, opts = {}) => req(ip, ENDPOINTS.BLANK.path, { method: 'POST', timeoutMs: 60000, signal: opts.signal });
 export const postMeasure = (ip, opts = {}) => req(ip, ENDPOINTS.MEASURE.path, { method: 'POST', timeoutMs: 60000, signal: opts.signal });
 
@@ -206,6 +212,12 @@ export function measureToAnalysis(m, channel = 'green') {
   const r = Math.round(roi.r ?? 0), g = Math.round(roi.g ?? 0), b = Math.round(roi.b ?? 0);
   const total = r + g + b;
   const primary = channel === 'red' ? m.A_red : channel === 'blue' ? m.A_blue : m.A_green;
+  // Prefer the per-channel sigma (api v3+). Older firmware only sent
+  // absorbance_sigma, which was always blue's — wrong for a green reading, so
+  // fall back to it only when the per-channel values are absent.
+  const sigmaForChannel =
+    channel === 'red' ? m.sigma_red : channel === 'blue' ? m.sigma_blue : m.sigma_green;
+  const sigma = typeof sigmaForChannel === 'number' ? sigmaForChannel : m.absorbance_sigma;
   return {
     r, g, b,
     channel,
@@ -215,8 +227,12 @@ export function measureToAnalysis(m, channel = 'green') {
     absorbanceR: m.A_red,
     absorbanceG: m.A_green,
     absorbanceB: m.A_blue,
-    absorbanceStdDev: m.absorbance_sigma,
-    blueScoreStdDev: m.absorbance_sigma,
+    absorbanceStdDev: sigma,
+    sigmaR: m.sigma_red ?? null,
+    sigmaG: m.sigma_green ?? null,
+    sigmaB: m.sigma_blue ?? null,
+    boxChannel: m.channel ?? null,   // what the box actually rejected/σ'd on
+    blueScoreStdDev: sigma,
     transmittance: null,
     bgBlue: raw.patch ? Math.round(raw.patch.b ?? 0) : null,
     refMismatch: null,
