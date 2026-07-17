@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   connectAndVerify, getStatus, DEFAULT_IP, EXPECTED_API_VERSION,
+  MIN_API_VERSION, RECOMMENDED_API_VERSION,
 } from '../api/boxClient';
 import { boxDeviceKey } from '../utils/deviceCalibration';
 
@@ -19,6 +20,7 @@ export function BoxConnectionProvider({ children }) {
   const [status, setStatus] = useState(null);
   const [apiVersion, setApiVersion] = useState(null);
   const [apiVersionMatch, setApiVersionMatch] = useState(true);
+  const [apiVersionOutdated, setApiVersionOutdated] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [statusError, setStatusError] = useState(null);
 
@@ -36,6 +38,7 @@ export function BoxConnectionProvider({ children }) {
       setStatus(r.status);
       setApiVersion(r.apiVersion);
       setApiVersionMatch(r.apiVersionMatch);
+      setApiVersionOutdated(!!r.apiVersionOutdated);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e.message || 'Could not connect to the box.' };
@@ -68,7 +71,8 @@ export function BoxConnectionProvider({ children }) {
   const value = {
     ip, setIp,
     status, setStatus,
-    apiVersion, apiVersionMatch, EXPECTED_API_VERSION,
+    apiVersion, apiVersionMatch, apiVersionOutdated,
+    EXPECTED_API_VERSION, MIN_API_VERSION, RECOMMENDED_API_VERSION,
     connecting, statusError,
     connected, boxId, deviceKey, hasPreview,
     connect, disconnect, refresh,

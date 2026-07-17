@@ -74,7 +74,7 @@ function DraggableRect({ rect, color, label, onChange, boxW, boxH }) {
 export default function SetupScreen() {
   const {
     ip, setIp, status, connecting, statusError, connected, hasPreview,
-    apiVersion, apiVersionMatch, EXPECTED_API_VERSION,
+    apiVersion, apiVersionMatch, apiVersionOutdated, RECOMMENDED_API_VERSION, MIN_API_VERSION,
     connect, disconnect, refresh,
   } = useBoxConnection();
 
@@ -368,11 +368,19 @@ export default function SetupScreen() {
         <Text style={styles.cardTitle}>Connection</Text>
         <Text style={styles.metaText}>
           {status?.device_type || 'device'} · {status?.box_id || '—'} · fw {status?.fw_version || '—'}{'\n'}
-          api v{apiVersion ?? '?'}{apiVersionMatch ? ' ✓' : ` — app expects v${EXPECTED_API_VERSION} ⚠`}
+          api v{apiVersion ?? '?'}{apiVersionMatch ? (apiVersionOutdated ? ' ·' : ' ✓') : ` — app needs v${MIN_API_VERSION}+ ⚠`}
         </Text>
         {statusError && <Text style={styles.errInlineText}>⚠ {statusError}</Text>}
         {!apiVersionMatch && (
-          <Text style={styles.warnInlineText}>⚠ Firmware/app mismatch — update firmware or app.</Text>
+          <Text style={styles.warnInlineText}>
+            ⚠ This box's firmware is too old for the app (needs v{MIN_API_VERSION}+). Reflash the box.
+          </Text>
+        )}
+        {apiVersionMatch && apiVersionOutdated && (
+          <Text style={styles.infoInlineText}>
+            Box firmware is v{apiVersion} — everything works, but per-run repeatability (σ) needs
+            v{RECOMMENDED_API_VERSION}. Calibration σ is measured by the app and is unaffected.
+          </Text>
         )}
         <View style={styles.rowSmall}>
           <TouchableOpacity style={styles.linkBtn} onPress={refresh}><Text style={styles.linkText}>↻ Refresh</Text></TouchableOpacity>
@@ -676,6 +684,7 @@ const styles = StyleSheet.create({
   tooltipText: { color: '#78909C', fontSize: 12, lineHeight: 17, marginBottom: 8, fontStyle: 'italic' },
   errInlineText: { color: '#C62828', fontSize: 12, marginTop: 8, fontWeight: '600' },
   warnInlineText: { color: '#EF6C00', fontSize: 12, marginTop: 8, fontWeight: '600' },
+  infoInlineText: { color: '#78909C', fontSize: 11, marginTop: 8, lineHeight: 16 },
   rowSmall: { flexDirection: 'row', gap: 16, marginTop: 10 },
   linkBtn: { paddingVertical: 4 },
   linkText: { color: '#546E7A', fontSize: 13 },

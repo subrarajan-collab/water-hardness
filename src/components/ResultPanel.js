@@ -83,7 +83,12 @@ export default function ResultPanel({ result, hardnessPPM, deviceCalibrated, thu
       <Accordion title="Details">
         <Row name="Absorbance (blue)" value={fmt(result.absorbance, 3)} />
         <Row name="Absorbance (red · green)" value={`${fmt(result.absorbanceR, 3)} · ${fmt(result.absorbanceG, 3)}`} />
-        <Row name="Repeatability (σ)" value={fmt(result.absorbanceStdDev, 4)} />
+        <Row
+          name="Repeatability (σ)"
+          value={typeof result.absorbanceStdDev === 'number'
+            ? result.absorbanceStdDev.toFixed(4)
+            : '— needs box fw 1.3+'}
+        />
         <Row
           name="Frames used"
           value={result.frameCount != null

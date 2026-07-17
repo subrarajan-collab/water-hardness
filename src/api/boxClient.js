@@ -13,7 +13,15 @@ export const DEFAULT_IP = '192.168.4.1';
 // v3: measurement channel configurable via /config + reported in /status;
 //     /measure returns sigma_red/green/blue and the active channel, and both
 //     outlier rejection and absorbance_sigma follow that channel.
-export const EXPECTED_API_VERSION = 3;
+//
+// Compatibility is a RANGE, not an equality: a box that is permanently
+// sealed (soldered in, no UART access) can never be reflashed, so demanding
+// an exact version would nag forever about something the user cannot fix.
+// MIN = what the app needs to function at all; RECOMMENDED = what it needs
+// for full correctness. Anything in between works with a soft note.
+export const MIN_API_VERSION = 2;
+export const RECOMMENDED_API_VERSION = 3;
+export const EXPECTED_API_VERSION = RECOMMENDED_API_VERSION; // back-compat alias
 
 // The one place every endpoint path is spelled out. If you add a route to
 // the firmware, add it here — screens must not hardcode paths.
@@ -197,7 +205,10 @@ export async function connectAndVerify(ip) {
   return {
     status,
     apiVersion,
-    apiVersionMatch: apiVersion === EXPECTED_API_VERSION,
+    // usable at all
+    apiVersionMatch: typeof apiVersion === 'number' && apiVersion >= MIN_API_VERSION,
+    // usable but missing later fixes (e.g. per-channel sigma in v3)
+    apiVersionOutdated: typeof apiVersion === 'number' && apiVersion < RECOMMENDED_API_VERSION,
   };
 }
 
@@ -212,12 +223,17 @@ export function measureToAnalysis(m, channel = 'green') {
   const r = Math.round(roi.r ?? 0), g = Math.round(roi.g ?? 0), b = Math.round(roi.b ?? 0);
   const total = r + g + b;
   const primary = channel === 'red' ? m.A_red : channel === 'blue' ? m.A_blue : m.A_green;
-  // Prefer the per-channel sigma (api v3+). Older firmware only sent
-  // absorbance_sigma, which was always blue's — wrong for a green reading, so
-  // fall back to it only when the per-channel values are absent.
+  // Per-channel sigma (api v3+). On older firmware `absorbance_sigma` is
+  // ALWAYS blue's, whatever channel we're reading — so it is only valid when
+  // we're actually reading blue. Reporting it for a green reading would
+  // overstate the noise ~10x. Prefer null (unknown) over a wrong number: the
+  // between-run sigma computed in Full Calibration is correct regardless and
+  // is the one that matters for calibration.
   const sigmaForChannel =
     channel === 'red' ? m.sigma_red : channel === 'blue' ? m.sigma_blue : m.sigma_green;
-  const sigma = typeof sigmaForChannel === 'number' ? sigmaForChannel : m.absorbance_sigma;
+  const sigma = typeof sigmaForChannel === 'number'
+    ? sigmaForChannel
+    : (channel === 'blue' ? m.absorbance_sigma : null);
   return {
     r, g, b,
     channel,
